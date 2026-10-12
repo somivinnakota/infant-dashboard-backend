@@ -1,0 +1,99 @@
+{
+  "lastUpdated": "May 2026",
+  "assessedBy": "UNSW Science impact framework",
+  "headlines": {
+  "infantsImpacted": "2 million",
+  "fundingSecured": "€80 million",
+  "teamMembers": 130,
+  "spinouts": 3,
+  "partnershipCountries": 35,
+  "partnerships": 45
+},
+  "impactScores": {
+    "commercialisation": 3.2,
+    "scholarlyOutputs": 4.1,
+    "policyAndInfluence": 3.8,
+    "livesChanged": 4.5,
+    "sustainabilityAndDevelopment": 3.0
+  },
+  "sdgs": [
+    {
+      "number": 3,
+      "title": "Good Health and Well-being",
+      "description": "INFANT's research directly improves maternal, newborn and child health through earlier diagnosis, better treatments and improved clinical care pathways for families and high-risk infants.",
+      "color": "#4CAF50"
+    },
+    {
+      "number": 9,
+      "title": "Industry, Innovation and Infrastructure",
+      "description": "The centre develops AI-enabled medical technologies, digital health platforms and clinical innovations that translate research into scalable healthcare solutions and medtech commercialisation.",
+      "color": "#FF9800"
+    },
+    {
+      "number": 17,
+      "title": "Partnerships for the Goals",
+      "description": "INFANT delivers impact through extensive collaboration with hospitals, industry, government, NGOs and international research partners across 35 countries.",
+      "color": "#2196F3"
+    }
+  ],
+  "impactSummaries": {
+    "commercialisation": "INFANT turns maternal and child health research into marketable tools and spin-outs, especially around neonatal brain monitoring and fetal surveillance. Patented algorithms, the CergenX and NeuroBell ventures and Enterprise Ireland funding show a strong translation pathway from lab to clinic.",
+    "scholarlyOutputs": "The centre's academic output is substantial and diverse, with more than 1,800 UCC-recorded outputs across articles, abstracts and reviews spanning pregnancy, newborn neurophysiology, child health, microbiome science, nutrition and data science.",
+    "policyAndInfluence": "INFANT has shaped bereavement standards, workplace leave evidence and clinical practice discussions in Ireland. The centre's work has moved from research into national maternity standards, government reporting and professional training.",
+    "livesChanged": "The clearest human impact is on mothers, babies and families facing high-risk pregnancy, newborn injury, cerebral palsy and pregnancy loss. INFANT's tools and standards aim to detect problems earlier, reduce avoidable harm and make care more compassionate.",
+    "sustainabilityAndDevelopment": "INFANT contributes to sustainable health systems by building digital infrastructure, open-source tools, partnerships and training capacity. Its work in East Africa shows a strong development lens supporting durable health-system improvement."
+  },
+  "researchMetrics": {
+    "source": "SciVal / Scopus",
+    "lastUpdated": "September 2026",
+    "totalScholarlyOutput": 1956,
+    "totalCitations": 71792,
+    "internationalCollaboration": {
+      "percentage": 43.9,
+      "papers": 858,
+      "citations": 42192,
+      "citationsPerPaper": 49.2,
+      "fieldWeightedCitationImpact": 2.50
+    },
+    "nationalCollaboration": {
+      "percentage": 28.3,
+      "papers": 554,
+      "citations": 18184,
+      "citationsPerPaper": 32.8,
+      "fieldWeightedCitationImpact": 1.47
+    },
+    "institutionalCollaboration": {
+      "percentage": 26.1,
+      "papers": 510,
+      "citations": 11173,
+      "citationsPerPaper": 21.9,
+      "fieldWeightedCitationImpact": 1.09
+    },
+    "singleAuthorship": {
+      "percentage": 1.7,
+      "papers": 34,
+      "citations": 243,
+      "citationsPerPaper": 7.1,
+      "fieldWeightedCitationImpact": 0.86
+    },
+    "academicCorporateCollaboration": {
+      "percentage": 2.8,
+      "papers": 55,
+      "citations": 3106,
+      "citationsPerPaper": 56.5,
+      "fieldWeightedCitationImpact": 2.09
+    }
+  },
+  "societalThemes": [
+    "Healthy minds, healthy bodies",
+    "Building a liveable and healthy future"
+  ]
+  ,
+"researcherIds": [
+  8592149500, 6602292136, 7003834302, 7005697532, 23488971600,
+  14058615200, 14325532900, 7003406304, 7004340367, 35274742000,
+  57766349700, 54906442400, 55878030700, 56446432500, 57195999649,
+  14821978100, 36652012700, 56452487000, 56781057400, 56018206500,
+  57189689424, 57201913211
+]
+}
