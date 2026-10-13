@@ -63,6 +63,7 @@ const QUARTERS = {
 const app = express();
 app.use(cors({ origin: FRONTEND_ORIGINS }));
 app.use(express.json({ limit: '25mb' })); // room for several uploaded export files
+require('./mailchimp')(app);
 
 // Created only when a key is set, so the rest of the dashboard still works without one.
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
