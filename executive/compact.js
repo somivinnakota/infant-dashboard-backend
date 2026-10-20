@@ -26,7 +26,7 @@ const COMPACT_SHAPE = `Return ONLY a JSON object with exactly these keys:
 {"executive_summary":{"text":"","evidence":[]},
 "key_findings":[F],
 "kpi_analysis":[{"fact_id":"","interpretation":"","significance":"major|notable|minor"}],
-"sections":{"website":S,"social":S,"content":S,"media":S,"publications":S,"events":S,"conferences":S,"kpis":S},
+"sections":{"website":S,"social":S,"email":S,"content":S,"media":S,"publications":S,"events":S,"conferences":S,"kpis":S},
 "trends":[F],"cross_dataset":[F],"risks":[F],"opportunities":[F],
 "recommendations":[{"recommendation":"","evidence":[],"reasoning":"","expected_benefit":"","priority":"high|medium|low"}],
 "data_gaps":[""],"best_performing":[F],"annual_summary":""}
@@ -80,6 +80,8 @@ function compactData(pkg, { includeMonthly }) {
   if (posts.length) optional.push(['POSTS', posts]);
   const events = (pkg.events.in_period || []).slice(0, 4).map(e => `${e.id} | ${e.date} | ${short(e.name, 60)} | ${e.status}`);
   if (events.length) optional.push(['EVENTS', events]);
+  const emails = (pkg.email?.in_period || []).slice(0, 3).map(c => `${c.id} | email campaign ${c.date} | ${short(c.title, 60)} | delivered ${c.delivered}, open rate ${c.open_rate}, engagement rate ${c.engagement_rate}`);
+  if (emails.length) optional.push(['EMAIL CAMPAIGNS (best engagement first)', emails]);
   const journals = (pkg.publications.top_journals || []).slice(0, 3).map(j => `${short(j.journal, 50)}: ${j.publications}`);
   if (journals.length) optional.push(['TOP JOURNALS', [journals.join('; ')]]);
   const uploads = Object.entries(pkg.uploads).flatMap(([k, u]) => (u.categories || []).slice(0, 2).map(c => `${k} by ${c.column}: ${c.top.slice(0, 4).map(t => `${short(t.name, 25)} ${t.entries}`).join(', ')}`));

@@ -21,7 +21,7 @@ const section = {
   },
 };
 
-const SECTION_NAMES = ['website', 'social', 'content', 'media', 'publications', 'events', 'conferences', 'kpis'];
+const SECTION_NAMES = ['website', 'social', 'email', 'content', 'media', 'publications', 'events', 'conferences', 'kpis'];
 
 const REPORT_SCHEMA = {
   type: 'object',
@@ -89,6 +89,7 @@ const ANSWER_SCHEMA = {
 // Which availability entries switch each report section off.
 const SECTION_AVAILABILITY = {
   website: ['website'],
+  email: ['mailchimp'],
   media: ['media'],
   kpis: ['kpis'],
   conferences: ['conferences'],

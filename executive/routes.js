@@ -11,7 +11,7 @@ const { buildPackage } = require('./package');
 const { listPeriods, TYPES } = require('./periods');
 const { generateReport, answerQuestion, listReports, getReport, aiSettings } = require('./engine');
 
-module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents, readImpactData, getFacebookStats }) {
+module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents, readImpactData, getFacebookStats, getMailchimpCampaigns }) {
   const router = express.Router();
 
   const safely = async (label, fn) => {
@@ -22,9 +22,10 @@ module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents,
     const type = String(body?.type || '');
     const periodKey = String(body?.period || '');
     if (!TYPES.includes(type)) throw Object.assign(new Error('Choose a report type.'), { status: 400 });
-    const [eventbrite, facebook] = await Promise.all([
+    const [eventbrite, facebook, mailchimp] = await Promise.all([
       safely('Eventbrite', getEventbriteEvents),
       safely('Facebook', getFacebookStats),
+      getMailchimpCampaigns ? safely('Mailchimp', getMailchimpCampaigns) : null,
     ]);
     const impact = await safely('impact data', async () => readImpactData());
     return buildPackage({
@@ -34,6 +35,7 @@ module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents,
       eventbrite,
       impact,
       facebook,
+      mailchimp,
       uploads: body?.uploads && typeof body.uploads === 'object' ? body.uploads : {},
     });
   }

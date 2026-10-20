@@ -72,7 +72,7 @@ const REPORT_BRIEFS = {
 - best_performing: 3 to 6 findings naming the best-performing posts, months or items, citing their ids.
 - trends: 3 to 6 using the monthly figures. risks and opportunities: 3 to 5 each. recommendations: 3 to 6.
 - annual_summary: 180 to 260 words of polished prose suitable for the annual report: overall performance, major achievements, major changes, strongest channels and content, key challenges and strategic opportunities. Only what the data supports.
-- Awards, campaigns and content themes have no dataset: say so in data_gaps, never invent them.`,
+- Awards, campaigns (other than the Mailchimp email campaigns in the package) and content themes have no dataset: say so in data_gaps, never invent them.`,
 };
 
 const ASK_PROMPT = `Answer the user's question using ONLY the data package, following every rule above.

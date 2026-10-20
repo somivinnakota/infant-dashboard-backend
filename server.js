@@ -871,6 +871,7 @@ app.get('/api/quarterly-report', async (req, res) => {
       return r.date.startsWith(`${y}-`) && month >= qq.start && month <= qq.end;
     });
     const otherLines = [];
+    const otherFigures = [];
     for (const [name, rows] of Object.entries(social.series)) {
       const code = name.split('-')[0];
       const meta = social.meta[name];
@@ -881,6 +882,7 @@ app.get('/api/quarterly-report', async (req, res) => {
       const c = combine(now, meta.aggregation);
       const p = combine(before, meta.aggregation);
       otherLines.push(`- ${meta.label}: ${formatMetric(c, meta)} | ${prevQ.quarter} ${prevQ.year}: ${formatMetric(p, meta)} | change: ${p ? percentChange(c, p) : 'not available'}`);
+      otherFigures.push({ platform: PLATFORM_NAMES[code] || code, label: meta.label, display: formatMetric(c, meta), previousDisplay: p === null ? null : formatMetric(p, meta), change: p ? percentChange(c, p) : null });
     }
 
     const fb = await optional('Facebook', getFacebookStats);
@@ -896,6 +898,42 @@ app.get('/api/quarterly-report', async (req, res) => {
       ? `Note: ${quarter} ${year} is still in progress. Each metric is compared with the same days last year, up to its latest uploaded day (newest data: ${formatDayMonth(latest)}).`
       : '';
     const nextQuarter = quarter === 'Q4' ? `Q1 ${year + 1}` : `Q${Number(quarter[1]) + 1} ${year}`;
+
+    // Email (Mailchimp): this quarter against the same quarter last year. If the quarter is still
+    // in progress, last year is cut off at the same day, so the comparison is like-for-like.
+    const mailchimpData = await optional('Mailchimp', () => require('./mailchimp').getCampaigns());
+    const campaigns = (mailchimpData?.campaigns || []).map(c => ({ ...c, date: String(c.sentAt || '').slice(0, 10) }));
+    const today = new Date().toISOString().slice(0, 10);
+    const todayMonth = Number(today.slice(5, 7));
+    const emailCutoff = today.startsWith(`${year}-`) && todayMonth >= q.start && todayMonth <= q.end ? today.slice(5) : '12-31';
+    const emailFor = y => {
+      const list = inQuarter(campaigns, y).filter(c => c.date.slice(5) <= emailCutoff);
+      const total = key => list.reduce((t, c) => t + (c[key] || 0), 0);
+      const delivered = total('delivered');
+      return {
+        campaigns: list.length,
+        delivered,
+        openRate: delivered ? total('uniqueOpens') / delivered : null,
+        engagementRate: delivered ? total('uniqueClicks') / delivered : null,
+      };
+    };
+    const email = mailchimpData ? { connected: true, current: emailFor(year), previous: emailFor(prevYear) } : { connected: false };
+    const rateText = v => (v === null ? 'not available' : `${(v * 100).toFixed(1)}%`);
+    const pointsChange = (c, p) => (c === null || p === null ? 'not available' : `${c - p >= 0 ? '+' : ''}${((c - p) * 100).toFixed(1)} percentage points`);
+    let emailBlock;
+    if (!email.connected) {
+      emailBlock = 'EMAIL (MAILCHIMP): not available (Mailchimp is not connected).';
+    } else if (!email.current.campaigns) {
+      emailBlock = `EMAIL (MAILCHIMP): no email campaigns were sent in ${quarter} ${year} (${quarter} ${prevYear}: ${email.previous.campaigns}).`;
+    } else {
+      const ec = email.current;
+      const ep = email.previous;
+      emailBlock = `EMAIL (MAILCHIMP), compared with ${quarter} ${prevYear}:
+${line('Campaigns sent', { current: ec.campaigns, previous: ep.campaigns })}
+${line('Emails delivered', { current: ec.delivered, previous: ep.delivered })}
+- Engagement rate (subscribers who clicked ÷ emails delivered): ${rateText(ec.engagementRate)} | ${quarter} ${prevYear}: ${rateText(ep.engagementRate)} | change: ${pointsChange(ec.engagementRate, ep.engagementRate)}
+- Open rate (can be inflated by Apple Mail privacy features, so treat with caution): ${rateText(ec.openRate)} | ${quarter} ${prevYear}: ${rateText(ep.openRate)} | change: ${pointsChange(ec.openRate, ep.openRate)}`;
+    }
 
     const prompt = `Write a board-level quarterly engagement report that is analytical, evidence-based and direct.
 
@@ -918,6 +956,8 @@ ${line('Page views', fbCsv.views)}
 ${line('Page visits', fbCsv.visits)}
 ${line('Interactions', fbCsv.interactions)}
 ${otherLines.length ? `\nOTHER PLATFORMS FROM UPLOADED EXPORTS (compared with ${prevQ.quarter} ${prevQ.year}):\n${otherLines.join('\n')}\n` : ''}
+${emailBlock}
+
 Use these exact sections:
 QUARTERLY SUMMARY (2-3 sentences, headline story)
 WHAT CHANGED AND WHY (3-4 sentences, analytical; only suggest reasons as possibilities, not facts)
@@ -952,6 +992,9 @@ Reference numbers in every section. Never use "it is important to". Maximum 450 
           current: { views: fbCsv.views.current, visits: fbCsv.visits.current, interactions: fbCsv.interactions.current },
           previous: { views: fbCsv.views.previous, visits: fbCsv.visits.previous, interactions: fbCsv.interactions.previous },
         },
+        others: otherFigures,
+        othersComparedWith: `${prevQ.quarter} ${prevQ.year}`,
+        mailchimp: email,
       },
       report,
     });
@@ -1164,7 +1207,7 @@ refreshFacebookToken();
 setInterval(refreshFacebookToken, 24 * HOUR);
 
 // ── Executive reports (AI analysis layer) ──
-app.use('/api/executive', require('./executive/routes')({ loadSocialData, getEventbriteEvents, readImpactData, getFacebookStats }));
+app.use('/api/executive', require('./executive/routes')({ loadSocialData, getEventbriteEvents, readImpactData, getFacebookStats, getMailchimpCampaigns: require('./mailchimp').getCampaigns }));
 
 app.listen(PORT, HOST, () => {
   console.log(`Server running on http://${HOST}:${PORT}`);

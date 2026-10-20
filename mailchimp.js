@@ -48,21 +48,29 @@ function toCampaign(r) {
   };
 }
 
+// Sent campaigns, oldest first, kept for 15 minutes. Also used by the quarterly and executive reports.
+// Returns null when no Mailchimp key is set, so reports can say Mailchimp isn't connected.
+async function getCampaigns({ refresh = false } = {}) {
+  const apiKey = process.env.MAILCHIMP_API_KEY;
+  if (!apiKey || !apiKey.includes('-')) return null;
+  if (!cache || refresh || Date.now() - cache.at > CACHE_MS) {
+    const campaigns = (await fetchReports(apiKey))
+      .map(toCampaign)
+      .filter(c => c.sent > 0 && c.sentAt)
+      .sort((a, b) => a.sentAt.localeCompare(b.sentAt));
+    cache = { at: Date.now(), data: { campaigns, fetchedAt: new Date().toISOString() } };
+  }
+  return cache.data;
+}
+
 module.exports = function mailchimpRoutes(app) {
   app.get('/api/mailchimp', async (req, res) => {
-    const apiKey = process.env.MAILCHIMP_API_KEY;
-    if (!apiKey || !apiKey.includes('-')) {
-      return res.status(503).json({ error: 'Mailchimp is not set up yet. Add MAILCHIMP_API_KEY to the backend settings.' });
-    }
     try {
-      if (!cache || req.query.refresh || Date.now() - cache.at > CACHE_MS) {
-        const campaigns = (await fetchReports(apiKey))
-          .map(toCampaign)
-          .filter(c => c.sent > 0 && c.sentAt)
-          .sort((a, b) => a.sentAt.localeCompare(b.sentAt));
-        cache = { at: Date.now(), data: { campaigns, fetchedAt: new Date().toISOString() } };
+      const data = await getCampaigns({ refresh: Boolean(req.query.refresh) });
+      if (!data) {
+        return res.status(503).json({ error: 'Mailchimp is not set up yet. Add MAILCHIMP_API_KEY to the backend settings.' });
       }
-      res.json(cache.data);
+      res.json(data);
     } catch (e) {
       console.error('Mailchimp:', e.message);
       const rejected = e.status === 401 || e.status === 403;
@@ -74,3 +82,5 @@ module.exports = function mailchimpRoutes(app) {
     }
   });
 };
+
+module.exports.getCampaigns = getCampaigns;

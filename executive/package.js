@@ -284,6 +284,74 @@ function eventsSection(eventbrite, period) {
   };
 }
 
+/* ── Email (Mailchimp) ───────────────────────────────────────── */
+
+// Campaigns sent in each period. Rates are worked out from the period's totals (all campaigns
+// combined), so a large send counts for more than a small one.
+function emailSection(mailchimp, period) {
+  if (!mailchimp) return { status: 'not_connected', facts: [], context: {} };
+  const campaigns = (mailchimp.campaigns || [])
+    .map(c => ({ ...c, date: String(c.sentAt || '').slice(0, 10) }))
+    .filter(c => /^\d{4}-\d{2}-\d{2}$/.test(c.date));
+  const current = campaigns.filter(c => inPeriod(c.date, period));
+  if (!current.length) return { status: 'no_data_for_period', facts: [], context: {} };
+
+  const earliest = campaigns.reduce((min, c) => (c.date < min ? c.date : min), '9999-12-31');
+  const pick = p => campaigns.filter(c => inPeriod(c.date, p));
+  const total = (list, key) => list.reduce((t, c) => t + (c[key] || 0), 0);
+  const rate = (list, key, base) => { const b = total(list, base); return b > 0 ? total(list, key) / b : null; };
+  const measures = [
+    ['email.campaigns', 'Email campaigns sent (Mailchimp)', 'count', list => list.length],
+    ['email.delivered', 'Emails delivered (Mailchimp)', 'count', list => total(list, 'delivered')],
+    ['email.engagement_rate', 'Email engagement rate (subscribers who clicked ÷ emails delivered)', 'percent', list => rate(list, 'uniqueClicks', 'delivered')],
+    ['email.open_rate', 'Email open rate (unique opens ÷ emails delivered)', 'percent', list => rate(list, 'uniqueOpens', 'delivered')],
+    ['email.click_to_open', 'Email click-to-open rate (subscribers who clicked ÷ unique opens)', 'percent', list => rate(list, 'uniqueClicks', 'uniqueOpens')],
+    ['email.unsubscribe_rate', 'Email unsubscribe rate (unsubscribes ÷ emails delivered)', 'percent', list => rate(list, 'unsubscribed', 'delivered')],
+  ];
+
+  const facts = [];
+  for (const [id, label, unit, measure] of measures) {
+    const now = measure(current);
+    if (now === null) continue;
+    const vs = {};
+    const notes = [];
+    for (const c of period.comparisons) {
+      if (c.end < earliest) {
+        vs[c.key] = null;
+        notes.push(`No comparison with ${c.label}: no Mailchimp campaigns are recorded before ${earliest}.`);
+        continue;
+      }
+      vs[c.key] = compare(now, measure(pick(c)), unit);
+    }
+    if (id === 'email.open_rate') notes.push('Open rates can be inflated by Apple Mail Privacy Protection, so the engagement rate is the more reliable measure.');
+    facts.push({
+      id, section: 'email', platform: 'Mailchimp', label, unit,
+      combined_by: unit === 'percent' ? 'ratio of period totals' : 'sum',
+      current: { value: round(now, 4), display: formatValue(now, unit) },
+      vs, notes,
+    });
+  }
+
+  const perCampaign = (c, key) => (c.delivered > 0 ? c[key] / c.delivered : null);
+  const ranked = [...current].sort((a, b) => (perCampaign(b, 'uniqueClicks') ?? -1) - (perCampaign(a, 'uniqueClicks') ?? -1));
+  return {
+    status: 'available',
+    facts,
+    context: {
+      note: 'Campaigns sent from Mailchimp, ranked by engagement rate.',
+      in_period: ranked.slice(0, 10).map(c => ({
+        id: `email.${c.id}`,
+        date: c.date,
+        title: clip(c.title, 100),
+        delivered: c.delivered,
+        open_rate: formatValue(perCampaign(c, 'uniqueOpens'), 'percent'),
+        engagement_rate: formatValue(perCampaign(c, 'uniqueClicks'), 'percent'),
+        unsubscribes: c.unsubscribed,
+      })),
+    },
+  };
+}
+
 /* ── Uploaded spreadsheets (press, KPIs, calendar, conferences) ─ */
 
 const MONTH_WORDS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
@@ -364,7 +432,7 @@ function uploadSection(key, title, upload, period) {
 
 /* ── The package ─────────────────────────────────────────────── */
 
-async function buildPackage({ type, periodKey, social, eventbrite, impact, facebook, uploads = {}, loadPublications = fetchPublications }) {
+async function buildPackage({ type, periodKey, social, eventbrite, impact, facebook, mailchimp = null, uploads = {}, loadPublications = fetchPublications }) {
   const period = resolvePeriod(type, periodKey);
   const { facts: socialFacts, monthly } = socialSection(social, period);
   const { facts: postFacts, lists: posts } = postsSection(social, period);
@@ -373,6 +441,7 @@ async function buildPackage({ type, periodKey, social, eventbrite, impact, faceb
   try { publications = await loadPublications(); } catch (error) { console.warn('Executive report: PubMed unavailable:', error.message); }
   const pubs = publicationsSection(publications, period);
   const events = eventsSection(eventbrite, period);
+  const email = emailSection(mailchimp, period);
   const uploadParts = Object.fromEntries(Object.entries(UPLOAD_SOURCES).map(([key, title]) => [key, uploadSection(key, title, uploads[key], period)]));
 
   const context = [];
@@ -394,6 +463,7 @@ async function buildPackage({ type, periodKey, social, eventbrite, impact, faceb
     ...postFacts,
     ...pubs.facts,
     ...events.facts,
+    ...email.facts,
     ...Object.values(uploadParts).flatMap(u => u.facts),
   ];
 
@@ -410,6 +480,7 @@ async function buildPackage({ type, periodKey, social, eventbrite, impact, faceb
       instagram: platformAvailable('ig') ? 'available' : 'no_data_for_period',
       facebook: platformAvailable('fb') ? 'available' : 'no_data_for_period',
       linkedin: platformAvailable('li') ? 'available' : 'no_data_for_period',
+      mailchimp: email.status,
       post_level_content: postFacts.length ? 'available' : 'no_data_for_period',
       publications: pubs.status,
       events: events.status,
@@ -428,6 +499,7 @@ async function buildPackage({ type, periodKey, social, eventbrite, impact, faceb
     audience: audienceSection(social),
     publications: pubs.context,
     events: events.context,
+    email: email.context,
     uploads: Object.fromEntries(Object.entries(uploadParts).map(([k, v]) => [k, v.context])),
     context,
   };
@@ -443,6 +515,7 @@ function evidenceIds(pkg) {
   Object.values(pkg.content).forEach(l => [...l.top, ...l.bottom].forEach(p => ids.add(p.id)));
   (pkg.publications.in_period || []).forEach(p => ids.add(p.id));
   (pkg.events.in_period || []).forEach(e => ids.add(e.id));
+  (pkg.email?.in_period || []).forEach(c => ids.add(c.id));
   Object.values(pkg.uploads).forEach(u => (u.in_period || []).forEach(r => ids.add(r.id)));
   return ids;
 }
