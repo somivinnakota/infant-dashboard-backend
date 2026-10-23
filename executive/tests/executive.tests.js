@@ -143,7 +143,7 @@ function goodReport() {
     key_findings: [{ statement: 'Average engagement rate fell by 1.0 percentage points to 4.0%.', type: 'fact', evidence_level: 'high', evidence: ['social.li-engagement-rate-total'] }],
     kpi_analysis: [{ fact_id: 'social.li-impressions-total', interpretation: 'Visibility grew.', significance: 'notable' }],
     sections: {
-      website: section('not_available'), social: section('analysed'), content: section('not_available'), media: section('not_available'),
+      website: section('not_available'), social: section('analysed'), email: section('not_available'), content: section('not_available'), media: section('not_available'),
       publications: section('not_available'), events: section('not_available'), conferences: section('not_available'), kpis: section('not_available'),
     },
     trends: [],

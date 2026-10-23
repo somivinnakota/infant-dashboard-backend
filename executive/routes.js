@@ -11,7 +11,7 @@ const { buildPackage } = require('./package');
 const { listPeriods, TYPES } = require('./periods');
 const { generateReport, answerQuestion, listReports, getReport, aiSettings } = require('./engine');
 
-module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents, readImpactData, getFacebookStats, getMailchimpCampaigns }) {
+module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents, readImpactData, getFacebookStats, getMailchimpCampaigns, loadPublications }) {
   const router = express.Router();
 
   const safely = async (label, fn) => {
@@ -36,6 +36,7 @@ module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents,
       impact,
       facebook,
       mailchimp,
+      ...(loadPublications ? { loadPublications } : {}), // the verified publication list (publications.js)
       uploads: body?.uploads && typeof body.uploads === 'object' ? body.uploads : {},
     });
   }

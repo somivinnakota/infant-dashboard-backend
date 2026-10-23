@@ -107,16 +107,18 @@ function compactData(pkg, { includeMonthly }) {
   return text;
 }
 
-function compactReportMessages(pkg) {
+// glossaryText: the metric definitions for this report (from glossary.js), sent after the DATA.
+// It is added on top of the DATA budget (a few hundred tokens), so no data is dropped to make room.
+function compactReportMessages(pkg, glossaryText = '') {
   const type = pkg.report.type;
   const system = `${COMPACT_RULES}\n\n${COMPACT_SHAPE}\n\n${COMPACT_BRIEFS[type]}`;
-  const user = `DATA:\n${compactData(pkg, { includeMonthly: type !== 'quarterly' })}`;
+  const user = `DATA:\n${compactData(pkg, { includeMonthly: type !== 'quarterly' })}${glossaryText ? `\n\n${glossaryText}` : ''}`;
   return { system, user, estimate: estimateTokens(system) + estimateTokens(user) };
 }
 
-function compactAskMessages(pkg, question) {
+function compactAskMessages(pkg, question, glossaryText = '') {
   const system = `${COMPACT_RULES}\n\n${COMPACT_ASK}`;
-  const user = `DATA:\n${compactData(pkg, { includeMonthly: false })}\n\nQUESTION: ${short(question, 300)}`;
+  const user = `DATA:\n${compactData(pkg, { includeMonthly: false })}${glossaryText ? `\n\n${glossaryText}` : ''}\n\nQUESTION: ${short(question, 300)}`;
   return { system, user, estimate: estimateTokens(system) + estimateTokens(user) };
 }
 

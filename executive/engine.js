@@ -18,6 +18,7 @@ const { SYSTEM_PROMPT, REPORT_BRIEFS, ASK_PROMPT } = require('./prompts');
 const { REPORT_SCHEMA, ANSWER_SCHEMA } = require('./schema');
 const { validateReport, validateAnswer } = require('./validate');
 const { compactReportMessages, compactAskMessages } = require('./compact');
+const glossary = require('../glossary');
 
 const SAVED_DIR = path.join(__dirname, 'saved-reports');
 
@@ -138,11 +139,41 @@ async function runWithValidation({ system, user, schemaName, schema, validate, p
 
 const packageMessage = pkg => `DATA PACKAGE (authoritative):\n${JSON.stringify(pkg)}`;
 
+// Glossary entries (see glossary/engagement_glossary.json) for the metrics in the package, given to the AI.
+function glossaryIdsForPackage(pkg) {
+  return [...new Set([
+    ...pkg.facts.map(f => glossary.glossaryIdFor(f.id)),
+    ...glossary.comparisonIds(pkg.report.comparisons.map(c => c.key), pkg.report.type),
+  ].filter(Boolean))];
+}
+
+// Glossary entries for the metrics the report actually uses (the facts it cites), for the PDF appendix.
+function glossaryIdsForReport(report, pkg) {
+  const cited = new Set();
+  const walk = value => {
+    if (Array.isArray(value)) value.forEach(walk);
+    else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        if (k === 'evidence' && Array.isArray(v)) v.forEach(id => cited.add(id));
+        else if (k === 'fact_id') cited.add(v);
+        else walk(v);
+      }
+    }
+  };
+  walk(report);
+  const factIds = new Set((pkg?.facts || []).map(f => f.id));
+  return [...new Set([
+    ...[...cited].filter(id => factIds.has(id)).map(glossary.glossaryIdFor),
+    ...glossary.comparisonIds((pkg?.report?.comparisons || []).map(c => c.key), pkg?.report?.type),
+  ].filter(Boolean))];
+}
+
 async function generateReport(pkg) {
   const free = aiSettings().plan === 'free';
-  const compact = free ? compactReportMessages(pkg) : null;
+  const glossaryIds = glossaryIdsForPackage(pkg);
+  const compact = free ? compactReportMessages(pkg, glossary.promptBlock(glossaryIds, { compact: true })) : null;
   const run = await runWithValidation({
-    system: free ? compact.system : `${SYSTEM_PROMPT}\n\nREPORT BRIEF\n${REPORT_BRIEFS[pkg.report.type]}`,
+    system: free ? compact.system : `${SYSTEM_PROMPT}\n\nREPORT BRIEF\n${REPORT_BRIEFS[pkg.report.type]}\n\n${glossary.promptBlock(glossaryIds)}`,
     user: free ? compact.user : `${packageMessage(pkg)}\n\nOUTPUT SCHEMA:\n${JSON.stringify(REPORT_SCHEMA)}`,
     maxTokens: free ? 3000 : 8192,
     schemaName: 'executive_report',
@@ -163,15 +194,17 @@ async function generateReport(pkg) {
     data_snapshot: pkg.data_snapshot,
     validation: run.validation,
     report: run.output,
+    glossary_ids: glossaryIdsForReport(run.output, pkg), // listed in the PDF's glossary appendix
     package: pkg, // kept so the report shows exactly the figures it was written from
   });
 }
 
 async function answerQuestion(pkg, question) {
   const free = aiSettings().plan === 'free';
-  const compact = free ? compactAskMessages(pkg, question) : null;
+  const glossaryIds = glossaryIdsForPackage(pkg);
+  const compact = free ? compactAskMessages(pkg, question, glossary.promptBlock(glossaryIds, { compact: true })) : null;
   const run = await runWithValidation({
-    system: free ? compact.system : `${SYSTEM_PROMPT}\n\n${ASK_PROMPT}`,
+    system: free ? compact.system : `${SYSTEM_PROMPT}\n\n${ASK_PROMPT}\n\n${glossary.promptBlock(glossaryIds)}`,
     user: free ? compact.user : `${packageMessage(pkg)}\n\nQUESTION: ${String(question).slice(0, 500)}\n\nOUTPUT SCHEMA:\n${JSON.stringify(ANSWER_SCHEMA)}`,
     maxTokens: free ? 700 : 2000,
     schemaName: 'dashboard_answer',
@@ -203,7 +236,11 @@ function listReports() {
 function getReport(id) {
   if (!/^[\w-]+$/.test(id)) return null;
   const file = path.join(SAVED_DIR, `${id}.json`);
-  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+  if (!fs.existsSync(file)) return null;
+  const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // Reports saved before the glossary existed get their appendix entries worked out now.
+  if (!record.glossary_ids && record.report) record.glossary_ids = glossaryIdsForReport(record.report, record.package);
+  return record;
 }
 
 module.exports = { generateReport, answerQuestion, listReports, getReport, aiSettings, callModel, parseJson };

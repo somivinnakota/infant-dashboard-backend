@@ -8,6 +8,8 @@ const axios = require('axios');
 const Groq = require('groq-sdk');
 const PDFDocument = require('pdfkit');
 const socialImport = require('./social-import');
+const glossary = require('./glossary');
+const publications = require('./publications');
 
 
 /* =========================================================
@@ -444,10 +446,22 @@ function socialBlock(social) {
   return lines.join('\n');
 }
 
+// Options for the verified publication list (publications.js): INFANT's researchers from impact-data.json.
+function publicationOptions() {
+  try { return { researcherIds: readImpactData().researcherIds || [] }; } catch { return { researcherIds: [] }; }
+}
+
+// Verified INFANT publications since 2013 (Scopus and PubMed, checked for an INFANT affiliation).
+async function getPublicationCount() {
+  const data = await publications.getPublications(publicationOptions());
+  if (!data) throw new Error('The verified publication list is not available yet.');
+  return data.totalVerified;
+}
+
 function publicationsBlock(count) {
   return count === null
-    ? 'PUBLICATIONS (PubMed): not available (PubMed could not be reached).'
-    : `PUBLICATIONS (PubMed, live): ${formatNumber(count)} publications with an INFANT Research Centre affiliation.`;
+    ? 'PUBLICATIONS: not available (the verified publication list could not be loaded).'
+    : `PUBLICATIONS (Scopus and PubMed, verified INFANT affiliation, since ${publications.FIRST_YEAR}): ${formatNumber(count)} publications.`;
 }
 
 function uploadBlock(text, name) {
@@ -611,12 +625,34 @@ app.get('/api/eventbrite', async (req, res) => {
   }
 });
 
-app.get('/api/publications/count', async (req, res) => {
+   app.get('/api/publications/count', async (req, res) => {
   try {
-    res.json({ total: await getPubMedCount() });
+    // Also per year: verified papers (each counted once) and the Scopus citations of those papers.
+    const data = await publications.getPublications(publicationOptions());
+    const byYear = {};
+    for (const p of (data?.papers || []).filter(x => x.status === 'verified' && x.year)) {
+      const y = (byYear[p.year] = byYear[p.year] || { publications: 0, citations: 0, withCitationCount: 0 });
+      y.publications += 1;
+      if (typeof p.citations === 'number') { y.citations += p.citations; y.withCitationCount += 1; }
+    }
+    res.json({ total: await getPublicationCount(), byYear, source: 'Scopus and PubMed, verified INFANT affiliation' });
   } catch (error) {
-    console.error('PubMed count error:', error.message);
-    res.status(502).json({ error: 'Could not reach PubMed.' });
+    console.error('Publication count error:', error.message);
+    res.status(502).json({ error: 'The verified publication list is not available yet.' });
+  }
+});
+
+// The verified INFANT publication list, cross-checked against the INFANT website (see publications.js).
+// The first build after a restart takes a minute or two; until then this answers 202 and the page waits.
+app.get('/api/publications/verified', async (req, res) => {
+  try {
+    const pending = publications.refresh(publicationOptions(), { force: Boolean(req.query.refresh) });
+    const current = publications.latest() || await Promise.race([pending, new Promise(resolve => setTimeout(resolve, 20000))]);
+    if (!current) return res.status(202).json({ building: true });
+    res.json({ ...current, building: publications.isBuilding() });
+  } catch (error) {
+    console.error('Verified publications error:', error.message);
+    res.status(500).json({ error: 'The publication list could not be built. Check the server log for details.' });
   }
 });
 
@@ -739,6 +775,17 @@ app.delete('/api/social-series/:name', (req, res) => {
   }
 });
 
+// The engagement metrics glossary, for the "what does this mean" tooltips on metric cards.
+app.get('/api/glossary', (req, res) => {
+  const data = glossary.loadGlossary();
+  if (!data) return res.status(500).json({ error: 'The glossary could not be read.' });
+  res.json({
+    title: data.title,
+    version: data.schema_version,
+    metrics: data.metrics.map(({ id, term, category, definition, why_it_matters }) => ({ id, term, category, definition, why_it_matters })),
+  });
+});
+
 app.get('/api/impact-data', (req, res) => {
   try {
     res.json(readImpactData());
@@ -788,7 +835,7 @@ app.post('/api/report', async (req, res) => {
 
     const [fb, pubCount] = await Promise.all([
       optional('Facebook', getFacebookStats),
-      optional('PubMed', getPubMedCount),
+      optional('Publications', getPublicationCount),
     ]);
     const social = loadSocialData();
     const year = social.latestDate ? Number(social.latestDate.slice(0, 4)) : new Date().getFullYear();
@@ -882,7 +929,7 @@ app.get('/api/quarterly-report', async (req, res) => {
       const c = combine(now, meta.aggregation);
       const p = combine(before, meta.aggregation);
       otherLines.push(`- ${meta.label}: ${formatMetric(c, meta)} | ${prevQ.quarter} ${prevQ.year}: ${formatMetric(p, meta)} | change: ${p ? percentChange(c, p) : 'not available'}`);
-      otherFigures.push({ platform: PLATFORM_NAMES[code] || code, label: meta.label, display: formatMetric(c, meta), previousDisplay: p === null ? null : formatMetric(p, meta), change: p ? percentChange(c, p) : null });
+      otherFigures.push({ key: name, platform: PLATFORM_NAMES[code] || code, label: meta.label, display: formatMetric(c, meta), previousDisplay: p === null ? null : formatMetric(p, meta), change: p ? percentChange(c, p) : null });
     }
 
     const fb = await optional('Facebook', getFacebookStats);
@@ -935,6 +982,18 @@ ${line('Emails delivered', { current: ec.delivered, previous: ep.delivered })}
 - Open rate (can be inflated by Apple Mail privacy features, so treat with caution): ${rateText(ec.openRate)} | ${quarter} ${prevYear}: ${rateText(ep.openRate)} | change: ${pointsChange(ec.openRate, ep.openRate)}`;
     }
 
+    // Glossary entries for the metrics in this report: given to the AI, and listed in the PDF appendix.
+    const glossaryIds = [...new Set([
+      ...['ig-reach', 'ig-views', 'ig-interactions', 'ig-visits', 'ig-follows', 'fb-views', 'fb-visits', 'fb-interactions'].map(glossary.glossaryIdFor),
+      'engagement_rate', // the live Facebook "talking about as a share of followers" figure
+      ...otherFigures.map(o => glossary.glossaryIdFor(o.key)),
+      ...(email.connected && email.current.campaigns ? ['click_through_rate', 'open_rate'] : []),
+      'year_on_year_change',
+      ...(otherFigures.length ? ['quarter_on_quarter_change'] : []),
+    ].filter(Boolean))];
+    // Short version (definitions only): the free AI model runs out of room with the full notes and rules.
+    const glossaryBlock = glossary.promptBlock(glossaryIds, { compact: true });
+
     const prompt = `Write a board-level quarterly engagement report that is analytical, evidence-based and direct.
 
 PERIOD: ${quarter} ${year}, compared with ${quarter} ${prevYear}.
@@ -957,7 +1016,7 @@ ${line('Page visits', fbCsv.visits)}
 ${line('Interactions', fbCsv.interactions)}
 ${otherLines.length ? `\nOTHER PLATFORMS FROM UPLOADED EXPORTS (compared with ${prevQ.quarter} ${prevQ.year}):\n${otherLines.join('\n')}\n` : ''}
 ${emailBlock}
-
+${glossaryBlock ? `\n${glossaryBlock}\n` : ''}
 Use these exact sections:
 QUARTERLY SUMMARY (2-3 sentences, headline story)
 WHAT CHANGED AND WHY (3-4 sentences, analytical; only suggest reasons as possibilities, not facts)
@@ -997,6 +1056,7 @@ Reference numbers in every section. Never use "it is important to". Maximum 450 
         mailchimp: email,
       },
       report,
+      glossaryIds,
     });
   } catch (error) {
     console.error('Quarterly report error:', error);
@@ -1008,7 +1068,7 @@ app.post('/api/impact-narrative', async (req, res) => {
   try {
     const impact = readImpactData();
     const [pubCount, eventbrite] = await Promise.all([
-      optional('PubMed', getPubMedCount),
+      optional('Publications', getPublicationCount),
       optional('Eventbrite', getEventbriteEvents),
     ]);
     const totalCapacity = eventbrite
@@ -1023,7 +1083,7 @@ DATA:
 - ${impact.headlines.infantsImpacted} infants impacted globally
 - ${impact.headlines.fundingSecured} research funding secured
 - ${impact.headlines.partnerships}+ partnerships across ${impact.headlines.partnershipCountries} countries
-- ${pubCount === null ? 'PubMed publication count: not available' : `${formatNumber(pubCount)} publications on PubMed`}
+- ${pubCount === null ? 'Publication count: not available' : `${formatNumber(pubCount)} verified INFANT publications since ${publications.FIRST_YEAR} (Scopus and PubMed)`}
 - ${totalCapacity === null ? 'Eventbrite event capacity: not available' : `${formatNumber(totalCapacity)} total capacity across Eventbrite events`}
 
 IMPACT SCORES (out of 5, scored using the ${impact.assessedBy}):
@@ -1111,6 +1171,26 @@ app.post('/api/pdf', (req, res) => {
         .text(`•  ${line.replace(/^[-•]\s+/, '')}`, 62, doc.y, { width: width - 12, lineGap: 2 });
     } else {
       doc.font('Helvetica').fontSize(9.5).fillColor('#374151').text(line, 50, doc.y, { width, lineGap: 2 });
+    }
+  }
+
+  // Appendix: definitions of the metrics used in this report, taken from the central glossary.
+  const ids = Array.isArray(req.body?.glossaryIds) ? req.body.glossaryIds.map(String).slice(0, 60) : [];
+  const appendix = glossary.entriesFor(ids);
+  if (appendix.length) {
+    const source = glossary.loadGlossary();
+    doc.addPage();
+    doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#53266a').text('APPENDIX: GLOSSARY OF METRICS USED IN THIS REPORT', 50, 50, { width });
+    doc.moveDown(0.3);
+    doc.font('Helvetica').fontSize(8.5).fillColor('#6b7280')
+      .text(pdfSafe(`Definitions from the ${source?.title || 'INFANT Engagement Metrics Glossary'}${source?.schema_version ? `, version ${source.schema_version}` : ''}.`), 50, doc.y, { width });
+    doc.moveDown(0.6);
+    for (const m of appendix) {
+      doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#374151').text(pdfSafe(m.term), 50, doc.y, { width, continued: true })
+        .font('Helvetica').fillColor('#9ca3af').text(pdfSafe(`  ·  ${m.category}`));
+      doc.font('Helvetica').fontSize(9.5).fillColor('#374151').text(pdfSafe(m.definition), 50, doc.y, { width, lineGap: 2 });
+      doc.font('Helvetica-Oblique').fontSize(9).fillColor('#4b5563').text(pdfSafe(`Why it matters: ${m.why_it_matters}`), 50, doc.y, { width, lineGap: 2 });
+      doc.moveDown(0.6);
     }
   }
 
@@ -1203,11 +1283,12 @@ function startupChecks() {
 }
 
 startupChecks();
+publications.refresh(publicationOptions()); // build the verified publication list in the background
 refreshFacebookToken();
 setInterval(refreshFacebookToken, 24 * HOUR);
 
 // ── Executive reports (AI analysis layer) ──
-app.use('/api/executive', require('./executive/routes')({ loadSocialData, getEventbriteEvents, readImpactData, getFacebookStats, getMailchimpCampaigns: require('./mailchimp').getCampaigns }));
+app.use('/api/executive', require('./executive/routes')({ loadSocialData, getEventbriteEvents, readImpactData, getFacebookStats, getMailchimpCampaigns: require('./mailchimp').getCampaigns, loadPublications: () => publications.getPublicationItems(publicationOptions()) }));
 
 app.listen(PORT, HOST, () => {
   console.log(`Server running on http://${HOST}:${PORT}`);

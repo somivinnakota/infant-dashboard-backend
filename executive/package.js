@@ -235,16 +235,16 @@ function publicationsSection(items, period) {
   const count = p => items.filter(i => inPeriod(i.date, p)).length;
   const now = count(period);
   const vs = {};
-  const notes = ['Counted from PubMed by the "INFANT Research Centre" affiliation; other databases count differently.'];
+  const notes = ['Verified INFANT publications: found in Scopus or PubMed with an INFANT affiliation, each paper counted once.'];
   for (const c of period.comparisons) {
     if (c.start < earliest) { vs[c.key] = null; notes.push(`No comparison with ${c.label}: the publication list loaded does not go back that far.`); continue; }
     vs[c.key] = compare(now, count(c), 'count');
   }
   const current = items.filter(i => inPeriod(i.date, period)).sort((a, b) => b.date.localeCompare(a.date));
-  const facts = [{ id: 'pub.count', section: 'publications', label: 'Publications (PubMed)', unit: 'count', combined_by: 'count', current: { value: now, display: formatValue(now, 'count') }, vs, notes }];
+  const facts = [{ id: 'pub.count', section: 'publications', label: 'Publications (verified, Scopus and PubMed)', unit: 'count', combined_by: 'count', current: { value: now, display: formatValue(now, 'count') }, vs, notes }];
   if (current.length) {
     const share = current.filter(i => i.open_access).length / current.length;
-    facts.push({ id: 'pub.open_access_share', section: 'publications', label: 'Share of publications open access in PubMed Central', unit: 'percent', combined_by: 'share', current: { value: round(share, 4), display: formatValue(share, 'percent') }, vs: {}, notes: [] });
+    facts.push({ id: 'pub.open_access_share', section: 'publications', label: 'Share of publications open access', unit: 'percent', combined_by: 'share', current: { value: round(share, 4), display: formatValue(share, 'percent') }, vs: {}, notes: [] });
   }
   const journals = {};
   current.forEach(i => { if (i.journal) journals[i.journal] = (journals[i.journal] || 0) + 1; });
@@ -438,7 +438,7 @@ async function buildPackage({ type, periodKey, social, eventbrite, impact, faceb
   const { facts: postFacts, lists: posts } = postsSection(social, period);
 
   let publications = null;
-  try { publications = await loadPublications(); } catch (error) { console.warn('Executive report: PubMed unavailable:', error.message); }
+  try { publications = await loadPublications(); } catch (error) { console.warn('Executive report: publications unavailable:', error.message); }
   const pubs = publicationsSection(publications, period);
   const events = eventsSection(eventbrite, period);
   const email = emailSection(mailchimp, period);
