@@ -109,14 +109,17 @@ async function scopusSearch(query, apiKey) {
   let total = Infinity;
   for (let start = 0; start < Math.min(total, SCOPUS_MAX);) {
     let data;
+    const count = scopusPageSize; // the page size THIS request asks for
     try {
       ({ data } = await axios.get(SCOPUS_URL, {
-        params: { query, start, count: scopusPageSize, httpAccept: 'application/json', apiKey },
+        params: { query, start, count, httpAccept: 'application/json', apiKey },
         timeout: TIMEOUT,
       }));
     } catch (error) {
-      // Some API keys only allow 25 results per request: switch down once and retry.
-      if (error.response?.status === 400 && scopusPageSize > SCOPUS_SMALL_PAGE) {
+      // Off the university network (e.g. on Render) Scopus allows only 25 results per request.
+      // Switch down and retry. Checked against this request's own page size, because two searches
+      // run at once and the other one may already have switched the setting down.
+      if (error.response?.status === 400 && count > SCOPUS_SMALL_PAGE) {
         scopusPageSize = SCOPUS_SMALL_PAGE;
         continue;
       }
