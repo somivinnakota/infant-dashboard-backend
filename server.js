@@ -4,6 +4,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
+const compression = require('compression');
 const axios = require('axios');
 const Groq = require('groq-sdk');
 const PDFDocument = require('pdfkit');
@@ -64,6 +65,7 @@ const QUARTERS = {
 
 const app = express();
 app.use(cors({ origin: FRONTEND_ORIGINS }));
+app.use(compression());
 app.use(express.json({ limit: '25mb' })); // room for several uploaded export files
 require('./mailchimp')(app);
 
