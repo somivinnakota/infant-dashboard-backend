@@ -53,7 +53,8 @@ function allowedNumbers(pkg) {
     else if (Array.isArray(value)) value.forEach(walk);
     else if (value && typeof value === 'object') Object.values(value).forEach(walk);
   };
-  walk(pkg);
+    // The build time and data fingerprint are not figures the AI may quote.
+  walk({ ...pkg, generated_at: null, data_snapshot: null });
   for (let n = 0; n <= 4; n++) allowed.add(n); // quarter numbers and small counting words written as digits
   return allowed;
 }
