@@ -297,7 +297,7 @@ async function getFacebookSeries(since, until) {
     ['fb-views',        'page_total_media_view_unique'],
     ['fb-visits',       'page_views_total'],
     ['fb-interactions', 'page_post_engagements'],
-    ['fb-clicks',       'page_impressions'],
+    ['fb-clicks',       'page_total_actions'],
     ['fb-follows',      'page_daily_follows'],
   ];
 

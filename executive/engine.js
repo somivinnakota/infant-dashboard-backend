@@ -168,14 +168,26 @@ function glossaryIdsForReport(report, pkg) {
   ].filter(Boolean))];
 }
 
+// Free plan: the request (what is sent plus the longest reply allowed) must fit Groq's free limit of
+// 8,000 tokens a minute. Use the glossary with its notes if it fits, otherwise definitions only.
+const FREE_REQUEST_LIMIT = 8000;
+const FREE_REPLY_TOKENS = 3000;
+function fitToBudget(build) {
+  const full = build(false);
+  if (full.estimate + FREE_REPLY_TOKENS <= FREE_REQUEST_LIMIT) return full;
+  console.warn(`Executive report: request too large for the free plan with glossary notes (about ${full.estimate} tokens); sending definitions only.`);
+  return build(true);
+}
+
 async function generateReport(pkg) {
   const free = aiSettings().plan === 'free';
   const glossaryIds = glossaryIdsForPackage(pkg);
-  const compact = free ? compactReportMessages(pkg, glossary.promptBlock(glossaryIds, { compact: true })) : null;
+  const metricIds = pkg.facts.map(f => f.id);
+  const compact = free ? fitToBudget(lean => compactReportMessages(pkg, glossary.promptBlock(glossaryIds, { compact: true, lean, metricIds }))) : null;
   const run = await runWithValidation({
-    system: free ? compact.system : `${SYSTEM_PROMPT}\n\nREPORT BRIEF\n${REPORT_BRIEFS[pkg.report.type]}\n\n${glossary.promptBlock(glossaryIds)}`,
+    system: free ? compact.system : `${SYSTEM_PROMPT}\n\nREPORT BRIEF\n${REPORT_BRIEFS[pkg.report.type]}\n\n${glossary.promptBlock(glossaryIds, { metricIds })}`,
     user: free ? compact.user : `${packageMessage(pkg)}\n\nOUTPUT SCHEMA:\n${JSON.stringify(REPORT_SCHEMA)}`,
-    maxTokens: free ? 3000 : 8192,
+    maxTokens: free ? FREE_REPLY_TOKENS : 8192,
     schemaName: 'executive_report',
     schema: REPORT_SCHEMA,
     validate: validateReport,
@@ -195,6 +207,7 @@ async function generateReport(pkg) {
     validation: run.validation,
     report: run.output,
     glossary_ids: glossaryIdsForReport(run.output, pkg), // listed in the PDF's glossary appendix
+    methodology: glossary.methodologyNote(pkg), // periods, sources, missing data and limitations, as the glossary requires
     package: pkg, // kept so the report shows exactly the figures it was written from
   });
 }
@@ -202,9 +215,10 @@ async function generateReport(pkg) {
 async function answerQuestion(pkg, question) {
   const free = aiSettings().plan === 'free';
   const glossaryIds = glossaryIdsForPackage(pkg);
-  const compact = free ? compactAskMessages(pkg, question, glossary.promptBlock(glossaryIds, { compact: true })) : null;
+  const metricIds = pkg.facts.map(f => f.id);
+  const compact = free ? fitToBudget(lean => compactAskMessages(pkg, question, glossary.promptBlock(glossaryIds, { compact: true, lean, metricIds }))) : null;
   const run = await runWithValidation({
-    system: free ? compact.system : `${SYSTEM_PROMPT}\n\n${ASK_PROMPT}\n\n${glossary.promptBlock(glossaryIds)}`,
+    system: free ? compact.system : `${SYSTEM_PROMPT}\n\n${ASK_PROMPT}\n\n${glossary.promptBlock(glossaryIds, { metricIds })}`,
     user: free ? compact.user : `${packageMessage(pkg)}\n\nQUESTION: ${String(question).slice(0, 500)}\n\nOUTPUT SCHEMA:\n${JSON.stringify(ANSWER_SCHEMA)}`,
     maxTokens: free ? 700 : 2000,
     schemaName: 'dashboard_answer',
@@ -223,6 +237,13 @@ function saveReport(record) {
   return record;
 }
 
+// Newest period first (by the date it ends). Periods ending on the same day: the shorter one first
+// (e.g. Q4 2025, then July–December 2025, then 2025). Same period: the most recently generated first.
+const newestPeriodFirst = (a, b) =>
+  String(b.period?.end || '').localeCompare(String(a.period?.end || ''))
+  || String(b.period?.start || '').localeCompare(String(a.period?.start || ''))
+  || String(b.generated_at || '').localeCompare(String(a.generated_at || ''));
+
 function listReports() {
   if (!fs.existsSync(SAVED_DIR)) return [];
   return fs.readdirSync(SAVED_DIR).filter(f => f.endsWith('.json')).map(f => {
@@ -230,7 +251,7 @@ function listReports() {
       const r = JSON.parse(fs.readFileSync(path.join(SAVED_DIR, f), 'utf8'));
       return { id: r.id, type: r.type, period: r.period, generated_at: r.generated_at, model: r.model, validation_ok: r.validation?.ok, flagged: r.validation?.issues?.length || 0 };
     } catch { return null; }
-  }).filter(Boolean).sort((a, b) => b.generated_at.localeCompare(a.generated_at));
+  }).filter(Boolean).sort(newestPeriodFirst);
 }
 
 function getReport(id) {
@@ -240,6 +261,8 @@ function getReport(id) {
   const record = JSON.parse(fs.readFileSync(file, 'utf8'));
   // Reports saved before the glossary existed get their appendix entries worked out now.
   if (!record.glossary_ids && record.report) record.glossary_ids = glossaryIdsForReport(record.report, record.package);
+  // Reports saved before the methodology note existed get one worked out from their saved data.
+  if (!record.methodology && record.package) record.methodology = glossary.methodologyNote(record.package);
   return record;
 }
 

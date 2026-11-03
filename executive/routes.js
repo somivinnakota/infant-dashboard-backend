@@ -31,7 +31,7 @@ module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents,
     return buildPackage({
       type,
       periodKey,
-      social: loadSocialData(),
+      social: await loadSocialData(),
       eventbrite,
       impact,
       facebook,
@@ -47,9 +47,9 @@ module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents,
     res.status(status).json({ error: status < 500 ? error.message : fallback });
   };
 
-  router.get('/periods', (req, res) => {
+  router.get('/periods', async (req, res) => {
     try {
-      const social = loadSocialData();
+      const social = await loadSocialData();
       const dates = Object.values(social.series).flatMap(rows => (rows.length ? [rows[0].date, rows[rows.length - 1].date] : []));
       const earliest = dates.reduce((min, d) => (d < min ? d : min), '9999-12-31');
       const latest = social.latestDate || new Date().toISOString().slice(0, 10);
@@ -78,7 +78,9 @@ module.exports = function executiveRoutes({ loadSocialData, getEventbriteEvents,
     } catch (error) { fail(res, error, 'The report could not be generated. Check the server log for details.'); }
   });
 
-  router.get('/reports', (req, res) => res.json({ reports: listReports() }));
+  router.get('/reports', async (req, res) => {
+    res.json({ reports: await listReports() });
+  });
 
   router.get('/reports/:id', (req, res) => {
     const report = getReport(req.params.id);

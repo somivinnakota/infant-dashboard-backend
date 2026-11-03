@@ -891,7 +891,7 @@ app.post('/api/report', async (req, res) => {
       optional('Facebook', getFacebookStats),
       optional('Publications', getPublicationCount),
     ]);
-    const social = loadSocialData();
+    const social = await loadSocialData();
     const year = social.latestDate ? Number(social.latestDate.slice(0, 4)) : new Date().getFullYear();
 
     const data = [
@@ -919,7 +919,7 @@ app.get('/api/quarterly-report', async (req, res) => {
     const year = parseInt(req.query.year, 10) || new Date().getFullYear();
     const prevYear = year - 1;
     const q = QUARTERS[quarter];
-    const social = loadSocialData();
+    const social = await loadSocialData();
 
     // If the quarter is still in progress, compare both years only up to the latest uploaded day.
     const latest = social.latestDate;
@@ -1331,27 +1331,6 @@ app.get('/api/refresh-token', async (req, res) => {
   await refreshFacebookToken();
   res.json({ message: 'Token refresh attempted. Check the server log for the result.' });
 });
-app.get('/api/meta-status', async (req, res) => {
-  try {
-    res.json(await metaInsights.getMetaStatus());
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/meta-insights', async (req, res) => {
-  try {
-    res.json(await metaInsights.getAllMetaSeries());
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/meta-insights/refresh', (req, res) => {
-  metaInsights.invalidateCache();
-  res.json({ message: 'Meta API cache cleared.' });
-});
-
 
 /* =========================================================
    Start-up checks and start
