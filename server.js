@@ -644,6 +644,32 @@ app.get('/api/facebook', async (req, res) => {
   }
 });
 
+// Live Instagram figures for the Social media page: followers and posts, plus interactions over the last 7 days.
+app.get('/api/instagram', async (req, res) => {
+  try {
+    const igId = await metaInsights.getInstagramAccountId();
+    const graph = `https://graph.facebook.com/v21.0/${igId}`;
+    const token = process.env.FACEBOOK_ACCESS_TOKEN;
+    const { data } = await axios.get(graph, {
+      params: { fields: 'username,followers_count,media_count', access_token: token }, timeout: 20000,
+    });
+    // Likes, comments, saves and shares in the last 7 days (optional: left out if Meta doesn't return it).
+    let interactions = null;
+    try {
+      const until = Math.floor(Date.now() / 1000);
+      const { data: ins } = await axios.get(`${graph}/insights`, {
+        params: { metric: 'total_interactions', metric_type: 'total_value', period: 'day', since: until - 7 * 86400, until, access_token: token },
+        timeout: 20000,
+      });
+      interactions = ins?.data?.[0]?.total_value?.value ?? null;
+    } catch { /* not available for this account */ }
+    res.json({ ...data, interactions_7d: interactions });
+  } catch (error) {
+    console.error('Instagram error:', error.response?.data?.error?.message || error.message);
+    res.status(502).json({ error: 'Could not load Instagram data.' });
+  }
+});
+
 app.get('/api/eventbrite', async (req, res) => {
   try {
     res.json(await getEventbriteEvents());
