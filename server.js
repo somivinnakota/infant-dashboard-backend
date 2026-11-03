@@ -9,6 +9,7 @@ const axios = require('axios');
 const Groq = require('groq-sdk');
 const PDFDocument = require('pdfkit');
 const socialImport = require('./social-import');
+const metaInsights = require('./meta-insights');
 const glossary = require('./glossary');
 const publications = require('./publications');
 
@@ -345,14 +346,33 @@ function importLegacyCsvFiles() {
 }
 
 // All saved social data, with each series as a date-ordered list.
-function loadSocialData() {
+async function loadSocialData() {
   const store = readStore();
+
+  let liveData = null;
+  try {
+    liveData = await metaInsights.getAllMetaSeries();
+  } catch (err) {
+    console.warn('Meta Graph API unavailable, using uploaded CSV data:', err.message);
+  }
+
   const names = new Set([...Object.keys(SOCIAL_SERIES), ...Object.keys(store.series)]);
+  if (liveData) Object.keys(liveData.series).forEach(k => names.add(k));
+
   const series = {};
   const meta = {};
   let latestDate = '';
+
   for (const name of names) {
-    const rows = Object.entries(store.series[name] || {})
+    const storedRows = Object.fromEntries(
+      Object.entries(store.series[name] || {}).map(([d, v]) => [d, v])
+    );
+    if (liveData?.series[name]) {
+      for (const { date, value } of liveData.series[name]) {
+        storedRows[date] = value;
+      }
+    }
+    const rows = Object.entries(storedRows)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, value]) => ({ date, value }));
     series[name] = rows;
@@ -360,10 +380,16 @@ function loadSocialData() {
     const last = rows[rows.length - 1];
     if (last && last.date > latestDate) latestDate = last.date;
   }
+
   const items = Object.fromEntries(Object.entries(store.items).map(([key, list]) => [
     key, { label: list.label, measures: list.measures, rows: Object.values(list.rows) },
   ]));
-  return { series, meta, breakdowns: store.breakdowns, items, latestDate: latestDate || null };
+
+  return {
+    series, meta, breakdowns: store.breakdowns, items,
+    latestDate: latestDate || null,
+    dataSource: liveData ? 'meta-api' : 'csv-upload',
+  };
 }
 
 // Combines values the right way for each metric: added up, averaged (rates) or latest (running totals).
@@ -670,9 +696,9 @@ app.get('/api/publications', async (req, res) => {
 });
 
 // All social media CSV data in one response, one list per series across every year.
-app.get('/api/social-data', (req, res) => {
+app.get('/api/social-data', async (req, res) => {
   try {
-    res.json(loadSocialData());
+    res.json(await loadSocialData());
   } catch (error) {
     console.error('Social data error:', error.message);
     res.status(500).json({ error: 'Could not read the saved social media data.' });
@@ -1201,7 +1227,26 @@ app.post('/api/pdf', (req, res) => {
     .text('INFANT Research Centre · University College Cork · infantcentre.ie', 50, doc.y, { width, align: 'center' });
   doc.end();
 });
+app.get('/api/meta-status', async (req, res) => {
+  try {
+    res.json(await metaInsights.getMetaStatus());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
+app.get('/api/meta-insights', async (req, res) => {
+  try {
+    res.json(await metaInsights.getAllMetaSeries());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/meta-insights/refresh', (req, res) => {
+  metaInsights.invalidateCache();
+  res.json({ message: 'Meta API cache cleared.' });
+});
 /* =========================================================
    Facebook token auto-refresh
    ========================================================= */
@@ -1223,7 +1268,7 @@ async function refreshFacebookToken() {
     const tokenData = data?.data;
     if (!tokenData) { console.log('Facebook token refresh: could not read token data'); return; }
     if (tokenData.is_valid === false) {
-      console.error('Facebook token is no longer valid. Generate a new one and update FACEBOOK_ACCESS_TOKEN in .env.');
+      console.warn('Facebook token check returned invalid — may be a wrong App Secret in .env. The token itself may still work.');
       return;
     }
 
@@ -1260,6 +1305,27 @@ app.get('/api/refresh-token', async (req, res) => {
   await refreshFacebookToken();
   res.json({ message: 'Token refresh attempted. Check the server log for the result.' });
 });
+app.get('/api/meta-status', async (req, res) => {
+  try {
+    res.json(await metaInsights.getMetaStatus());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/meta-insights', async (req, res) => {
+  try {
+    res.json(await metaInsights.getAllMetaSeries());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/meta-insights/refresh', (req, res) => {
+  metaInsights.invalidateCache();
+  res.json({ message: 'Meta API cache cleared.' });
+});
+
 
 /* =========================================================
    Start-up checks and start

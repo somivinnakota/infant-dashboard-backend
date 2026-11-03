@@ -113,6 +113,8 @@ async function scopusSearch(query, apiKey) {
     try {
       ({ data } = await axios.get(SCOPUS_URL, {
         params: { query, start, count, httpAccept: 'application/json', apiKey },
+        // Off UCC's network, Scopus Search needs the institutional token Elsevier issues to the library.
+        headers: process.env.ELSEVIER_INSTTOKEN ? { 'X-ELS-Insttoken': process.env.ELSEVIER_INSTTOKEN } : {},
         timeout: TIMEOUT,
       }));
     } catch (error) {
@@ -319,6 +321,19 @@ function mergeInto(papers, index, record, source) {
   [paper.doi && `doi:${paper.doi}`, paper.pmid && `pmid:${paper.pmid}`, ...keys].filter(Boolean).forEach(k => index.set(k, paper));
 }
 
+// Elsevier explains a refusal in one of two formats; show its own words rather than "status code 403".
+function elsevierReason(error) {
+  const body = error.response?.data;
+  const status = error.response?.status;
+  const said = body?.['service-error']?.status?.statusText
+    || body?.['error-response']?.['error-message']
+    || (typeof body?.error === 'string' ? body.error : null)
+    || (typeof body === 'string' && body.trim() && !body.trim().startsWith('<') ? body.trim().slice(0, 150) : null);
+  const code = body?.['service-error']?.status?.statusCode || body?.['error-response']?.['error-code'];
+  const hint = status === 401 ? 'Key not recognised. ' : status === 403 ? 'Key refused by Elsevier. ' : status === 429 ? 'Weekly quota used up. ' : '';
+  return `${hint}${said ? `${code ? `${code}: ` : ''}${said}` : error.message}`;
+}
+
 /* ── Building the list ───────────────────────────────────────── */
 
 async function build({ researcherIds = [] } = {}) {
@@ -328,7 +343,7 @@ async function build({ researcherIds = [] } = {}) {
   const index = new Map();
   const attempt = async (name, fn) => {
     try { return { ok: true, ...(await fn()) }; } catch (error) {
-      const detail = error.response?.data?.['service-error']?.status?.statusText || error.response?.data?.error || error.message;
+      const detail = elsevierReason(error);
       console.warn(`Publications: ${name} unavailable:`, String(detail).slice(0, 200));
       return { ok: false, error: String(detail).slice(0, 200) };
     }
@@ -489,13 +504,21 @@ function refresh(options, { force = false } = {}) {
     state.lastStarted = Date.now();
     state.building = build(options)
       .then(data => {
-        // Keep the previous list if every database failed this time.
-        if (usable(data) || !state.data) {
+        // Keep the previous list if every database failed this time, or if Scopus failed now but
+        // worked before: a PubMed-only list would quietly drop the papers only Scopus finds.
+        const lostScopus = state.data?.sources?.scopus?.ok && !data.sources.scopus?.ok;
+        if (lostScopus || (!usable(data) && state.data)) {
+          state.data = { ...state.data, lastAttempt: { at: data.updatedAt, sources: data.sources } };
+        } else {
           state.data = data;
           if (usable(data)) writeCache(data);
         }
-        console.log(`Publications: ${data.totalVerified} verified INFANT publications since ${FIRST_YEAR} `
-          + `(plus ${data.otherOutputs} other outputs, ${data.needsReview} needing review).`);
+        if (state.data.lastAttempt?.at === data.updatedAt) {
+          console.warn(`Publications: update incomplete (${Object.entries(data.sources).filter(([, x]) => !x.ok).map(([k, x]) => `${k}: ${x.error}`).join('; ')}). Keeping the list from ${state.data.updatedAt}.`);
+        } else {
+          console.log(`Publications: ${data.totalVerified} verified INFANT publications since ${FIRST_YEAR} `
+            + `(plus ${data.otherOutputs} other outputs, ${data.needsReview} needing review).`);
+        }
         return state.data;
       })
       .catch(error => { console.error('Publications build failed:', error.message); return state.data; })
