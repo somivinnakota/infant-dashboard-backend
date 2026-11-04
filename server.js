@@ -129,17 +129,24 @@ const AI_RULES = `Rules that always apply:
 
 async function askAI(prompt) {
   if (!groq) throw new Error('GROQ_API_KEY is not set in .env, so AI features are unavailable.');
-  const completion = await groq.chat.completions.create({
-    model: AI_MODEL,
-    temperature: 0.3,
-    messages: [
-      { role: 'system', content: `You write reports for ${ORG_NAME}.\n\n${AI_RULES}` },
-      { role: 'user', content: prompt },
-    ],
-  });
-  const text = completion.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error('The AI returned an empty response.');
-  return text;
+  // A reasoning model can spend all its tokens "thinking" and return no text, so keep the
+  // thinking short, leave plenty of room for the answer, and try once more if it's still empty.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const completion = await groq.chat.completions.create({
+      model: AI_MODEL,
+      temperature: 0.3,
+      max_completion_tokens: 4000,
+      reasoning_effort: 'low',
+      messages: [
+        { role: 'system', content: `You write reports for ${ORG_NAME}.\n\n${AI_RULES}` },
+        { role: 'user', content: prompt },
+      ],
+    });
+    const text = completion.choices?.[0]?.message?.content?.trim();
+    if (text) return text;
+    console.warn(`AI returned no text (attempt ${attempt}, finish reason: ${completion.choices?.[0]?.finish_reason || 'unknown'}).`);
+  }
+  throw new Error('The AI returned an empty response twice. Try again in a minute.');
 }
 
 /* =========================================================
@@ -369,6 +376,8 @@ async function loadSocialData() {
     );
     if (liveData?.series[name]) {
       for (const { date, value } of liveData.series[name]) {
+        // Meta returns 0 for older days it no longer reports; keep the uploaded figure for those days.
+        if (!value && storedRows[date] > 0) continue;
         storedRows[date] = value;
       }
     }
