@@ -390,7 +390,9 @@ function importFile(store, { fileName, sheets, platform }) {
         const existing = store.series[`${other.code}-${metric}`];
         if (!existing) continue;
         const overlap = s.points.filter(p => p.date in existing);
-        if (overlap.length >= 7 && overlap.every(p => existing[p.date] === p.value)) {
+        // Days of 0 on both platforms prove nothing (quiet metrics like link clicks), so they don't count.
+        const telling = overlap.filter(p => p.value !== 0 || existing[p.date] !== 0);
+        if (telling.length >= 7 && telling.every(p => existing[p.date] === p.value)) {
           return { fileName, ok: false, message: `This matches the ${other.name} data already uploaded. Check it was dropped under the right platform.` };
         }
       }
