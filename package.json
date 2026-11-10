@@ -1,22 +1,25 @@
 {
-  "name": "backend",
+  "name": "infant-dashboard-backend",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "test": "node --test executive/tests/executive.tests.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "API for the INFANT engagement dashboard",
   "dependencies": {
     "axios": "^1.20.0",
-    "better-sqlite3": "^13.0.3",
     "compression": "^1.8.2",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "groq-sdk": "^1.6.0",
     "pdfkit": "^0.20.2"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

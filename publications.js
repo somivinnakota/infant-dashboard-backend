@@ -29,12 +29,13 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const { dataPath } = require('./data-dir');
 
 const FIRST_YEAR = 2013; // INFANT was founded in 2013
 const REFRESH_MS = 24 * 60 * 60 * 1000;
 const MIN_MANUAL_REFRESH_MS = 5 * 60 * 1000;
 const TIMEOUT = 45000;
-const CACHE_FILE = path.join(__dirname, 'publications-cache.json');
+const CACHE_FILE = dataPath('publications-cache.json', path.join(__dirname, 'publications-cache.json'));
 
 // Document types that count towards INFANT's publication total. Everything else is an "other output".
 const COUNTED_TYPES = ['Article', 'Review'];

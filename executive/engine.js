@@ -19,8 +19,9 @@ const { REPORT_SCHEMA, ANSWER_SCHEMA } = require('./schema');
 const { validateReport, validateAnswer } = require('./validate');
 const { compactReportMessages, compactAskMessages } = require('./compact');
 const glossary = require('../glossary');
+const { dataPath } = require('../data-dir');
 
-const SAVED_DIR = path.join(__dirname, 'saved-reports');
+const SAVED_DIR = dataPath('saved-reports', path.join(__dirname, 'saved-reports'));
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const RETRY_WAIT_MS = Number(process.env.EXECUTIVE_RETRY_WAIT_MS) || 61000; // free plan: wait for the per-minute allowance to reset

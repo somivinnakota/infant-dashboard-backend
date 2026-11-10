@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 node_modules/
 meta-history.json
+# Files the server writes while saving
+*.tmp
+*.damaged-*.json

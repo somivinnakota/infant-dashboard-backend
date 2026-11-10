@@ -18,13 +18,14 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const { dataPath } = require('./data-dir');
 
 const GRAPH = `https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v24.0'}`;
 const HTTP_TIMEOUT = 30000;
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const REFETCH_DAYS = 4;          // recent days are re-fetched every time (Meta finalises data up to 48h late)
 const DAY_MS = 86400000;
-const STORE_FILE = path.join(__dirname, 'meta-history.json');
+const STORE_FILE = dataPath('meta-history.json', path.join(__dirname, 'meta-history.json'));
 
 // Instagram metrics fetched per day with metric_type=total_value. Metrics Meta rejects are skipped.
 const IG_TOTAL_METRICS = {
