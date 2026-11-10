@@ -11,6 +11,7 @@ const socialImport = require('./social-import');
 const metaInsights = require('./meta-insights');
 const glossary = require('./glossary');
 const publications = require('./publications');
+const linkedin = require('./linkedin');
 const { formatNumber } = require('./format');
 const { dataPath } = require('./data-dir');
 
@@ -234,8 +235,10 @@ async function loadSocialData() {
     console.warn('Meta Graph API unavailable, using uploaded CSV data:', err.message);
   }
 
-  const names = new Set([...Object.keys(SOCIAL_SERIES), ...Object.keys(store.series)]);
-  if (liveData) Object.keys(liveData.series).forEach(k => names.add(k));
+  // Daily figures from the live connections: Meta (Instagram, Facebook) and LinkedIn.
+  const live = { ...liveData?.series, ...await optional('LinkedIn', linkedin.getLinkedInSeries) };
+
+  const names = new Set([...Object.keys(SOCIAL_SERIES), ...Object.keys(store.series), ...Object.keys(live)]);
 
   const series = {};
   const meta = {};
@@ -245,9 +248,9 @@ async function loadSocialData() {
     const storedRows = Object.fromEntries(
       Object.entries(store.series[name] || {}).map(([d, v]) => [d, v])
     );
-    if (liveData?.series[name]) {
-      for (const { date, value } of liveData.series[name]) {
-        // An uploaded Meta export is Meta's own figure for that day, so it wins; the API fills the other days.
+    if (live[name]) {
+      for (const { date, value } of live[name]) {
+        // An uploaded export is the platform's own figure for that day, so it wins; the API fills the other days.
         if (date in storedRows) continue;
         storedRows[date] = value;
       }
@@ -653,7 +656,8 @@ refreshFacebookToken();
 setInterval(refreshFacebookToken, 24 * HOUR);
 
 // ── Routes kept in their own files ──
-require('./linkedin')(app);
+linkedin(app);
+require('./sheets')(app);
 require('./quarterly-report')(app, { loadSocialData, getFacebookStats, optional, askAI });
 require('./pdf')(app);
 

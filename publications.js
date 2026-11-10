@@ -34,6 +34,9 @@ const { dataPath } = require('./data-dir');
 const FIRST_YEAR = 2013; // INFANT was founded in 2013
 const REFRESH_MS = 24 * 60 * 60 * 1000;
 const MIN_MANUAL_REFRESH_MS = 5 * 60 * 1000;
+// Raise this when the saved list needs new information (2 = every author's name). A list saved
+// by an older version is rebuilt straight away instead of waiting a day.
+const LIST_VERSION = 2;
 const TIMEOUT = 45000;
 const CACHE_FILE = dataPath('publications-cache.json', path.join(__dirname, 'publications-cache.json'));
 
@@ -86,7 +89,7 @@ const cleanDoi = doi => {
   return m ? m[0].replace(/[.,;)\]]+$/, '') : '';
 };
 const titleKey = title => String(title || '').toLowerCase()
-  .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+  .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
   .replace(/<[^>]+>/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 120);
 
 function decodeEntities(text) {
@@ -97,6 +100,9 @@ function decodeEntities(text) {
     .replace(/&([a-z]+);/gi, (m, name) => named[name.toLowerCase()] ?? m);
 }
 const stripTags = text => decodeEntities(String(text || '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+
+// The short author line shown on the page: the first three names, then "et al.".
+const shortAuthorList = names => (names.length ? `${names.slice(0, 3).join(', ')}${names.length > 3 ? ' et al.' : ''}` : '');
 
 // The earliest of several 'YYYY-MM-DD' dates.
 const earliest = dates => dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d || '')).sort()[0] || null;
@@ -204,16 +210,26 @@ function parsePubmedArticle(xml) {
   const pmid = xml.match(/<PMID[^>]*>(\d+)<\/PMID>/)?.[1];
   if (!pmid) return null;
   const types = [...xml.matchAll(/<PublicationType[^>]*>([^<]+)<\/PublicationType>/g)].map(m => m[1]);
+  // Every author: "Trujillo J" for the short line on the page, "Juan Trujillo" for searching.
   const authors = [...xml.matchAll(/<Author[\s>][\s\S]*?<\/Author>/g)].map(a => {
     const last = a[0].match(/<LastName>([^<]+)<\/LastName>/)?.[1];
+    const first = a[0].match(/<ForeName>([^<]+)<\/ForeName>/)?.[1];
     const initials = a[0].match(/<Initials>([^<]+)<\/Initials>/)?.[1];
-    return last ? `${decodeEntities(last)} ${initials || ''}`.trim() : stripTags(a[0].match(/<CollectiveName>([\s\S]*?)<\/CollectiveName>/)?.[1]);
+    if (!last) {
+      const group = stripTags(a[0].match(/<CollectiveName>([\s\S]*?)<\/CollectiveName>/)?.[1]);
+      return group ? { short: group, full: group } : null;
+    }
+    return {
+      short: `${decodeEntities(last)} ${initials || ''}`.trim(),
+      full: first ? `${decodeEntities(first)} ${decodeEntities(last)}` : `${decodeEntities(last)} ${initials || ''}`.trim(),
+    };
   }).filter(Boolean);
   return {
     pmid,
     title: stripTags(xml.match(/<ArticleTitle[^>]*>([\s\S]*?)<\/ArticleTitle>/)?.[1]).replace(/\.$/, ''),
     journal: stripTags(xml.match(/<Journal>[\s\S]*?<Title>([\s\S]*?)<\/Title>/)?.[1]),
-    authors: authors.length ? `${authors.slice(0, 3).join(', ')}${authors.length > 3 ? ' et al.' : ''}` : '',
+    authors: shortAuthorList(authors.map(a => a.short)),
+    authorNames: authors.map(a => a.full),
     doi: cleanDoi(xml.match(/<ArticleId IdType="doi">([^<]+)<\/ArticleId>/)?.[1] || xml.match(/<ELocationID EIdType="doi"[^>]*>([^<]+)<\/ELocationID>/)?.[1]),
     onlineDate: pubmedDate(xml.match(/<ArticleDate[^>]*>([\s\S]*?)<\/ArticleDate>/)?.[1]),
     issueDate: pubmedDate(xml.match(/<PubDate>([\s\S]*?)<\/PubDate>/)?.[1]),
@@ -253,6 +269,7 @@ async function crossrefRecord(doi) {
   const work = data?.message || {};
   return {
     addresses: (work.author || []).flatMap(a => (a.affiliation || []).map(x => x.name)).filter(Boolean),
+    authorNames: (work.author || []).map(a => [a.given, a.family].filter(Boolean).join(' ') || a.name).filter(Boolean),
     onlineDate: crossrefDate(work['published-online']),
     issueDate: crossrefDate(work['published-print']) || crossrefDate(work.issued),
   };
@@ -286,7 +303,8 @@ async function openalexRecords(dois) {
   const save = work => {
     const doi = cleanDoi(work.doi);
     const addresses = (work.authorships || []).flatMap(a => a.raw_affiliation_strings || []).filter(Boolean);
-    if (doi) records.set(doi, { addresses });
+    const authorNames = (work.authorships || []).map(a => a.author?.display_name).filter(Boolean);
+    if (doi) records.set(doi, { addresses, authorNames });
   };
   for (let i = 0; i < dois.length; i += 50) {
     const batch = dois.slice(i, i + 50);
@@ -392,7 +410,9 @@ async function build({ researcherIds = [] } = {}) {
     // PubMed's publication types are the most detailed, except that PubMed files conference
     // proceedings and books as journal articles; Scopus knows those, so trust it for them.
     p.type = SCOPUS_ONLY_KNOWS.includes(p.scopusType) ? p.scopusType : r.type;
-    for (const field of ['title', 'journal', 'authors', 'doi']) if (!p[field] && r[field]) p[field] = r[field];
+    for (const field of ['title', 'journal', 'doi']) if (!p[field] && r[field]) p[field] = r[field];
+    // Scopus search results only name the first author, so PubMed's full list replaces it.
+    if (r.authorNames?.length) { p.authors = r.authors; p.authorNames = r.authorNames; }
     p.openAccess = p.openAccess || r.openAccess;
   }
 
@@ -431,18 +451,22 @@ async function build({ researcherIds = [] } = {}) {
     p.onlineDate = p.onlineDate || r.onlineDate;
     p.issueDate = p.issueDate || r.issueDate;
     if (r.addresses.length && !p.addresses?.length) p.addresses = r.addresses;
+    if (r.authorNames?.length && !p.authorNames?.length) { p.authorNames = r.authorNames; p.authors = shortAuthorList(r.authorNames); }
     verify(p, r.addresses, 'Crossref');
   }
 
-  // Step 2d: OpenAlex, for papers with a DOI that the sources above couldn't verify. It often has
-  // addresses PubMed leaves out (e.g. a second affiliation for the same author).
-  const toOpenalex = unique.filter(p => !p.evidence && p.doi).map(p => p.doi);
+  // Step 2d: OpenAlex, for papers with a DOI that the sources above couldn't verify (it often has
+  // addresses PubMed leaves out, e.g. a second affiliation for the same author), and for papers
+  // still without a full author list (e.g. found only by Scopus, which names just the first author).
+  const toOpenalex = unique.filter(p => p.doi && (!p.evidence || !p.authorNames?.length)).map(p => p.doi);
   const openalex = await attempt('OpenAlex records', async () => ({ records: await openalexRecords(toOpenalex) }));
   const oaRecords = openalex.records || new Map();
   sources.openalex = { ok: openalex.ok, checked: toOpenalex.length, found: oaRecords.size, error: openalex.error };
   for (const p of unique) {
     const r = p.doi && oaRecords.get(p.doi);
-    if (!r?.addresses.length) continue;
+    if (!r) continue;
+    if (r.authorNames?.length && !p.authorNames?.length) { p.authorNames = r.authorNames; p.authors = shortAuthorList(r.authorNames); }
+    if (!r.addresses?.length) continue;
     verify(p, r.addresses, 'OpenAlex');
     if (!p.addresses?.length) p.addresses = r.addresses;
   }
@@ -472,6 +496,7 @@ async function build({ researcherIds = [] } = {}) {
   }
   const count = status => listed.filter(p => p.status === status).length;
   return {
+    version: LIST_VERSION,
     updatedAt: new Date().toISOString(),
     firstYear: FIRST_YEAR,
     countedTypes: COUNTED_TYPES,
@@ -500,7 +525,9 @@ const usable = data => Boolean(data.sources.scopus?.ok || data.sources.pubmed?.o
 // Starts a rebuild if the list is missing, older than a day, or a refresh was asked for.
 function refresh(options, { force = false } = {}) {
   const age = state.data ? Date.now() - Date.parse(state.data.updatedAt) : Infinity;
-  const due = age > REFRESH_MS || (force && Date.now() - state.lastStarted > MIN_MANUAL_REFRESH_MS);
+  const outdated = state.data && state.data.version !== LIST_VERSION;
+  const canStart = Date.now() - state.lastStarted > MIN_MANUAL_REFRESH_MS;
+  const due = age > REFRESH_MS || ((force || outdated) && canStart);
   if (!state.building && (due || !state.data)) {
     state.lastStarted = Date.now();
     state.building = build(options)
@@ -522,7 +549,7 @@ function refresh(options, { force = false } = {}) {
         }
         return state.data;
       })
-      .catch(error => { console.error('Publications build failed:', error.message); return state.data; })
+      .catch(error => { console.error('Publications build failed:', error.stack || error.message); return state.data; })
       .finally(() => { state.building = null; });
   }
   return state.data ? Promise.resolve(state.data) : state.building;

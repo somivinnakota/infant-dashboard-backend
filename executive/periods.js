@@ -1,10 +1,10 @@
 // Reporting periods: quarters, half-years and years, and the periods each is compared with.
 // Everything here is plain date arithmetic, so it can be tested without any AI.
 
-const DAY = 86400000;
+const { DAY, isoDay: toIso } = require('../time');
+
 const TYPES = ['quarterly', 'six-month', 'annual'];
 
-const toIso = ms => new Date(ms).toISOString().slice(0, 10);
 const daysIn = p => Math.round((Date.parse(p.end) - Date.parse(p.start)) / DAY) + 1;
 
 function monthsRange(year, firstMonth, months) {

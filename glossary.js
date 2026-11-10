@@ -152,7 +152,7 @@ const AVAILABILITY_TEXT = {
   not_available: 'not available',
 };
 const SOURCE_NAMES = {
-  instagram: 'Instagram (Meta)', facebook: 'Facebook (Meta)', linkedin: 'LinkedIn (uploaded exports)',
+  instagram: 'Instagram (Meta)', facebook: 'Facebook (Meta)', linkedin: 'LinkedIn',
   mailchimp: 'Mailchimp', post_level_content: 'post-level content', publications: 'publications (Scopus and PubMed, verified INFANT affiliation)',
   events: 'Eventbrite', media: 'press and media sheet', kpis: 'KPI tracker', events_calendar: 'calendar of events',
   conferences: 'conference list', website: 'website analytics', awards: 'awards', campaigns: 'campaigns',

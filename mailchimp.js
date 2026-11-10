@@ -1,7 +1,10 @@
 // Mailchimp campaign reports for the dashboard.
 // The API key stays on the server (MAILCHIMP_API_KEY in .env / Render); the browser only gets the numbers.
 
-const CACHE_MS = 15 * 60 * 1000; // ask Mailchimp at most every 15 minutes unless "refresh" is pressed
+const { createCache } = require('./cache');
+const { MINUTE } = require('./time');
+
+const cache = createCache(15 * MINUTE); // ask Mailchimp at most every 15 minutes unless "refresh" is pressed
 const PAGE_SIZE = 1000;
 const FIELDS = [
   'total_items',
@@ -9,8 +12,6 @@ const FIELDS = [
   'reports.emails_sent', 'reports.send_time', 'reports.unsubscribed', 'reports.bounces',
   'reports.opens', 'reports.clicks',
 ].join(',');
-
-let cache = null;
 
 async function mailchimpGet(apiKey, path) {
   const dataCenter = apiKey.split('-').pop(); // the key ends in e.g. "-us21"
@@ -103,7 +104,7 @@ async function inBatches(items, size, fn) {
 async function getCampaigns({ refresh = false } = {}) {
   const apiKey = process.env.MAILCHIMP_API_KEY;
   if (!apiKey || !apiKey.includes('-')) return null;
-  if (!cache || refresh || Date.now() - cache.at > CACHE_MS) {
+  return cache.get('campaigns', async () => {
     const [reports, audiences] = await Promise.all([
       fetchReports(apiKey),
       fetchAudiences(apiKey).catch(() => []), // optional extra: the campaigns still load without it
@@ -113,9 +114,8 @@ async function getCampaigns({ refresh = false } = {}) {
     const campaigns = sent
       .map((r, i) => ({ ...toCampaign(r), ...(openers[i] !== null && { uniqueOpens: openers[i] }) }))
       .sort((a, b) => a.sentAt.localeCompare(b.sentAt));
-    cache = { at: Date.now(), data: { campaigns, audiences, fetchedAt: new Date().toISOString() } };
-  }
-  return cache.data;
+    return { campaigns, audiences, fetchedAt: new Date().toISOString() };
+  }, { refresh });
 }
 
 module.exports = function mailchimpRoutes(app) {

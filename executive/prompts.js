@@ -50,7 +50,7 @@ const REPORT_BRIEFS = {
 - executive_summary: 120 to 180 words. The most important developments, what performed well, what changed, what underperformed, and what management should know.
 - key_findings: the 4 to 6 most important findings.
 - kpi_analysis: one entry for each important fact, at most 12.
-- sections: analyse every section; social findings name the platform in each statement.
+- sections: analyse every section; social findings name the platform in each statement, with at least one finding for each platform that has figures in the package.
 - trends: 2 to 4. cross_dataset: only where two areas changed in the same period, and always as association, never cause.
 - risks and opportunities: 2 to 4 each, evidence-based only.
 - recommendations: 3 to 5, prioritised.

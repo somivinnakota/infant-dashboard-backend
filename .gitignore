@@ -8,3 +8,6 @@ meta-history.json
 # Files the server writes while saving
 *.tmp
 *.damaged-*.json
+linkedin-history.json
+# Uploaded sheets (KPI tracker, press, events, conferences) when DATA_DIR is not set
+sheets/

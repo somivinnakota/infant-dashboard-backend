@@ -19,12 +19,12 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const { dataPath } = require('./data-dir');
+const { createCache } = require('./cache');
+const { MINUTE, DAY, isoDay, addDays, today } = require('./time');
 
 const GRAPH = `https://graph.facebook.com/${process.env.META_GRAPH_VERSION || 'v24.0'}`;
 const HTTP_TIMEOUT = 30000;
-const CACHE_TTL_MS = 30 * 60 * 1000;
 const REFETCH_DAYS = 4;          // recent days are re-fetched every time (Meta finalises data up to 48h late)
-const DAY_MS = 86400000;
 const STORE_FILE = dataPath('meta-history.json', path.join(__dirname, 'meta-history.json'));
 
 // Instagram metrics fetched per day with metric_type=total_value. Metrics Meta rejects are skipped.
@@ -54,20 +54,11 @@ const CHANGED_IN_V2 = ['fb-views', 'fb-clicks'];
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
-const cache = new Map();
-function cached(key, loader) {
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.time < CACHE_TTL_MS) return Promise.resolve(hit.value);
-  return loader().then(value => { cache.set(key, { value, time: Date.now() }); return value; });
-}
-function invalidate() { cache.clear(); }
+const cache = createCache(30 * MINUTE);
 
 const token = () => process.env.FACEBOOK_ACCESS_TOKEN;
 const pageId = () => process.env.FACEBOOK_PAGE_ID;
-const isoDay = ms => new Date(ms).toISOString().slice(0, 10);
 const toTs = iso => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 1000);
-const addDays = (iso, n) => isoDay(Date.parse(`${iso}T00:00:00Z`) + n * DAY_MS);
-const today = () => isoDay(Date.now());
 const historyStart = () => `${new Date().getUTCFullYear() - 1}-01-01`;
 const apiError = err => err?.response?.data?.error?.message || err?.message || String(err);
 
@@ -126,7 +117,7 @@ async function fetchDaily(url, params, since, until, chunkDays, accessToken) {
       const data = await graphGet(url, { ...params, period: 'day', since: toTs(start), until: toTs(end) }, accessToken);
       for (const item of data?.data || []) {
         for (const v of item.values || []) {
-          if (v.end_time) points.push({ date: isoDay(Date.parse(v.end_time) - DAY_MS), value: Number(v.value) || 0 });
+          if (v.end_time) points.push({ date: isoDay(Date.parse(v.end_time) - DAY), value: Number(v.value) || 0 });
         }
       }
     } catch (err) {
@@ -144,7 +135,7 @@ function fetchFrom(store, key) {
 // ── Accounts ──────────────────────────────────────────────────────────────────
 
 async function getPageToken() {
-  return cached('fb-page-token', async () => {
+  return cache.get('fb-page-token', async () => {
     const data = await graphGet(`${GRAPH}/${pageId()}`, { fields: 'access_token' });
     if (!data?.access_token) throw new Error('Could not get a Page access token — check the token has pages_read_engagement');
     return data.access_token;
@@ -152,7 +143,7 @@ async function getPageToken() {
 }
 
 async function getInstagramAccountId() {
-  return cached('ig-account-id', async () => {
+  return cache.get('ig-account-id', async () => {
     const data = await graphGet(`${GRAPH}/${pageId()}`, { fields: 'instagram_business_account' });
     const igId = data?.instagram_business_account?.id;
     if (!igId) throw new Error('No Instagram Business Account linked to this Facebook Page.');
@@ -164,7 +155,7 @@ async function getInstagramAccountId() {
 
 // Check once which total_value metrics this account/API version accepts.
 async function usableIgMetrics(igId) {
-  return cached('ig-usable-metrics', async () => {
+  return cache.get('ig-usable-metrics', async () => {
     const day = addDays(today(), -3);
     const ok = [];
     await Promise.all(Object.keys(IG_TOTAL_METRICS).map(async metric => {
@@ -242,7 +233,7 @@ async function getInstagramSeries(store) {
     await fetchIgDailyTotals(store, igId, metrics, 60);
     igBackfillRunning = true;
     fetchIgDailyTotals(readStore(), igId, metrics)
-      .then(() => { console.log('Instagram history backfill complete'); invalidate(); })
+      .then(() => { console.log('Instagram history backfill complete'); cache.clear(); })
       .catch(err => console.warn('Instagram backfill stopped:', apiError(err)))
       .finally(() => { igBackfillRunning = false; });
   } else {
@@ -263,7 +254,7 @@ async function getFacebookSeries(store) {
 // ── Combined ──────────────────────────────────────────────────────────────────
 
 async function getAllMetaSeries() {
-  return cached('meta-all', async () => {
+  return cache.get('meta-all', async () => {
     const store = readStore();
     const results = await Promise.allSettled([getInstagramSeries(store), getFacebookSeries(store)]);
     results.forEach(r => r.status === 'rejected' && console.warn('Meta API:', apiError(r.reason)));
@@ -311,4 +302,4 @@ async function getMetaStatus() {
   return result;
 }
 
-module.exports = { getAllMetaSeries, getMetaStatus, getInstagramAccountId, invalidateCache: invalidate };
+module.exports = { getAllMetaSeries, getMetaStatus, getInstagramAccountId, invalidateCache: () => cache.clear() };
