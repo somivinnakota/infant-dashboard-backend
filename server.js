@@ -283,14 +283,17 @@ async function loadSocialData() {
 
 // Options for the verified publication list (publications.js): INFANT's researchers from impact-data.json.
 function publicationOptions() {
-  try { return { researcherIds: readImpactData().researcherIds || [] }; } catch { return { researcherIds: [] }; }
+  try {
+    const impact = readImpactData();
+    return { researcherIds: impact.researcherIds || [], investigators: impact.investigators || [] };
+  } catch { return { researcherIds: [], investigators: [] }; }
 }
 
 // Verified INFANT publications since 2013 (Scopus and PubMed, checked for an INFANT affiliation).
 async function getPublicationCount() {
   const data = await publications.getPublications(publicationOptions());
   if (!data) throw new Error('The verified publication list is not available yet.');
-  return data.totalVerified;
+  return data.totalCounted ?? data.totalVerified; // verified automatically, plus papers added by hand on the Publications page
 }
 
 /* =========================================================
@@ -346,7 +349,7 @@ app.get('/api/publications/count', async (req, res) => {
     // Also per year: verified papers (each counted once) and the Scopus citations of those papers.
     const data = await publications.getPublications(publicationOptions());
     const byYear = {};
-    for (const p of (data?.papers || []).filter(x => x.status === 'verified' && x.year)) {
+    for (const p of (data?.papers || []).filter(x => x.counted && x.year)) {
       const y = (byYear[p.year] = byYear[p.year] || { publications: 0, citations: 0, withCitationCount: 0 });
       y.publications += 1;
       if (typeof p.citations === 'number') { y.citations += p.citations; y.withCitationCount += 1; }
@@ -363,12 +366,52 @@ app.get('/api/publications/count', async (req, res) => {
 app.get('/api/publications/verified', async (req, res) => {
   try {
     const pending = publications.refresh(publicationOptions(), { force: Boolean(req.query.refresh) });
-    const current = publications.latest() || await Promise.race([pending, new Promise(resolve => setTimeout(resolve, 20000))]);
+    if (!publications.latest()) await Promise.race([pending, new Promise(resolve => setTimeout(resolve, 20000))]);
+    const current = publications.latest();
     if (!current) return res.status(202).json({ building: true });
     res.json({ ...current, building: publications.isBuilding() });
   } catch (error) {
     console.error('Verified publications error:', error.message);
     res.status(500).json({ error: 'The publication list could not be built. Check the server log for details.' });
+  }
+});
+
+// The listed researchers (the roster in impact-data.json): how many papers each has in the list,
+// how many of those are counted, and their latest ones. Shown on the Overview page.
+app.get('/api/publications/investigators', async (req, res) => {
+  try {
+    const data = await publications.getPublications(publicationOptions());
+    if (!data) return res.status(202).json({ building: true });
+    const investigators = (data.investigators || []).map(inv => {
+      const mine = data.papers.filter(p => p.investigators?.includes(inv.id));
+      return {
+        ...inv,
+        papers: mine.length,
+        counted: mine.filter(p => p.counted).length,
+        latest: mine.slice(0, 8).map(p => ({ id: p.id, title: p.title, journal: p.journal, date: p.date, doi: p.doi, pmid: p.pmid, counted: p.counted })),
+      };
+    }).sort((a, b) => b.papers - a.papers);
+    res.json({ updatedAt: data.updatedAt, firstYear: data.firstYear, investigators });
+  } catch (error) {
+    console.error('Investigator publications error:', error.message);
+    res.status(502).json({ error: 'The publication list is not available yet.' });
+  }
+});
+
+// Add a paper to the counted collection by hand, take one out, or undo either (action: null).
+app.put('/api/publications/collection', (req, res) => {
+  try {
+    const { key, action = null } = req.body || {};
+    const data = publications.latest();
+    if (!data) return res.status(503).json({ error: 'The publication list is not available yet.' });
+    if (!['include', 'exclude', null].includes(action)) return res.status(400).json({ error: 'action must be "include", "exclude" or null.' });
+    if (typeof key !== 'string' || !data.papers.some(p => p.key === key)) return res.status(404).json({ error: 'That paper is not in the publication list.' });
+    publications.setOverride(key, action);
+    const updated = publications.latest();
+    res.json({ paper: updated.papers.find(p => p.key === key), totalCounted: updated.totalCounted, manuallyAdded: updated.manuallyAdded, manuallyRemoved: updated.manuallyRemoved, byYear: updated.byYear });
+  } catch (error) {
+    console.error('Publication collection error:', error.message);
+    res.status(500).json({ error: 'The change could not be saved.' });
   }
 });
 

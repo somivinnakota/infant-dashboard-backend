@@ -18,7 +18,15 @@
 //   other_output  - an author's address names INFANT, but it is a letter, editorial, conference paper,
 //                   preprint, book etc. (listed, not counted)
 //   needs_review  - the addresses could not be retrieved, so nobody can confirm it yet (listed, not counted)
+//   investigator  - a paper by one of the listed researchers (the roster in impact-data.json) that could
+//                   not be verified automatically (listed, not counted; it can be added by hand)
 //   not_infant    - the addresses were checked and none names INFANT (listed, not counted)
+//
+// LISTED RESEARCHERS: a paper by someone on the roster is also verified when THAT AUTHOR'S OWN address
+// on the paper names UCC, CUMH or INFANT. A UCC address belonging to a co-author is not enough.
+//
+// BY HAND: any listed paper can be added to, or removed from, the counted collection on the
+// Publications page. Those decisions are saved in publication-overrides.json and survive rebuilds.
 // Verified papers keep the address that proves it ("evidence"), so anyone can check.
 // Each paper is dated by when it was first published (online first, if earlier than the journal issue).
 //
@@ -34,11 +42,13 @@ const { dataPath } = require('./data-dir');
 const FIRST_YEAR = 2013; // INFANT was founded in 2013
 const REFRESH_MS = 24 * 60 * 60 * 1000;
 const MIN_MANUAL_REFRESH_MS = 5 * 60 * 1000;
-// Raise this when the saved list needs new information (2 = every author's name). A list saved
+// Raise this when the saved list needs new information (2 = every author's name, 3 = listed
+// researchers and their own addresses). A list saved
 // by an older version is rebuilt straight away instead of waiting a day.
-const LIST_VERSION = 2;
+const LIST_VERSION = 3;
 const TIMEOUT = 45000;
 const CACHE_FILE = dataPath('publications-cache.json', path.join(__dirname, 'publications-cache.json'));
+const OVERRIDES_FILE = dataPath('publication-overrides.json', path.join(__dirname, 'publication-overrides.json'));
 
 // Document types that count towards INFANT's publication total. Everything else is an "other output".
 const COUNTED_TYPES = ['Article', 'Review'];
@@ -75,6 +85,88 @@ const namesInfant = address => namesTheCentre(address) && IN_CORK.test(address);
 function infantEvidence(addresses) {
   const named = (addresses || []).filter(namesTheCentre);
   return named.find(a => IN_CORK.test(a)) || (named.length && addresses.some(a => CORK_OR_UCC.test(a)) ? named[0] : undefined);
+}
+
+/* ── Listed researchers (the roster in impact-data.json) ─────── */
+
+// For a listed researcher, their own address naming UCC or CUMH is enough (as well as INFANT).
+const UCC_OR_CUMH = /University College Cork|\bUCC\b|National University of Ireland,? Cork|Cork University Maternity Hospital|\bCUMH\b/i;
+const investigatorAddress = address => namesTheCentre(address) || UCC_OR_CUMH.test(address);
+
+// A name as plain lower-case words: "Keelin O’Donoghue" -> ["keelin", "o'donoghue"].
+const nameWords = name => String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[’`]/g, "'")
+  .toLowerCase().replace(/[^a-z' -]/g, ' ').split(/\s+/).filter(Boolean);
+
+// The surname and first-name initials to look for: "William (Liam) Marnane" -> marnane, [w, l].
+function nameParts(name) {
+  const words = nameWords(name);
+  if (words.length < 2) return { surname: '', initials: [] };
+  return { surname: words[words.length - 1], initials: [...new Set(words.slice(0, -1).map(w => w[0]))] };
+}
+
+// Is this author (as named on a paper) the listed researcher? Surname plus a first-name initial, so
+// "William P Marnane", "L. Marnane" and "Juan Trujillo Wurttele" all match. Only ever asked about
+// papers Scopus or PubMed already returned for that researcher.
+function isAuthor(inv, authorName) {
+  if (!inv.surname) return false;
+  const words = nameWords(authorName);
+  const at = words.indexOf(inv.surname);
+  return at >= 0 && words.some((w, i) => i !== at && inv.initials.includes(w[0]));
+}
+
+// The roster: named entries from "investigators" (one person can have several Scopus profiles, or
+// none yet), plus every other ID in "researcherIds" as a person whose name is learnt from their papers.
+function buildRoster({ researcherIds = [], investigators = [] } = {}) {
+  const roster = investigators.map(i => ({
+    name: String(i.name || '').trim(), scopusIds: (i.scopusIds || []).map(String), pubmedAuthor: i.pubmedAuthor || '',
+  }));
+  const listed = new Set(roster.flatMap(r => r.scopusIds));
+  for (const id of researcherIds.map(String)) {
+    if (!listed.has(id)) { roster.push({ name: '', scopusIds: [id], pubmedAuthor: '' }); listed.add(id); }
+  }
+  return roster.map(r => ({ id: r.scopusIds[0] ? `scopus.${r.scopusIds[0]}` : `name.${shortHash(r.name)}`, ...r, ...nameParts(r.name) }));
+}
+
+// For roster entries that are only a Scopus ID: the author who appears on (nearly) all of that
+// profile's papers is the researcher. Needs at least five papers to be sure.
+function learnNames(roster, papers) {
+  for (const inv of roster.filter(r => !r.surname)) {
+    const mine = papers.filter(p => p.investigators?.includes(inv.id) && p.authorNames?.length);
+    const seenOn = new Map();
+    for (const p of mine) {
+      const onThisPaper = new Set();
+      for (const full of p.authorNames) {
+        const words = nameWords(full);
+        if (words.length < 2) continue;
+        const key = `${words[words.length - 1]}|${words[0][0]}`;
+        if (onThisPaper.has(key)) continue;
+        onThisPaper.add(key);
+        const entry = seenOn.get(key) || { papers: 0, spellings: {} };
+        entry.papers += 1;
+        entry.spellings[full] = (entry.spellings[full] || 0) + 1;
+        seenOn.set(key, entry);
+      }
+    }
+    const [key, best] = [...seenOn.entries()].sort((a, b) => b[1].papers - a[1].papers)[0] || [];
+    if (!best || mine.length < 5 || best.papers < mine.length * 0.6) continue;
+    const [surname, initial] = key.split('|');
+    inv.surname = surname;
+    inv.initials = [initial];
+    inv.name = Object.entries(best.spellings).sort((a, b) => b[1] - a[1])[0][0];
+    inv.nameLearned = true;
+  }
+}
+
+// The listed researcher's own address that names INFANT, UCC or CUMH, if the paper has one.
+function investigatorEvidence(paper, roster) {
+  for (const inv of roster.filter(r => r.surname && paper.investigators?.includes(r.id))) {
+    for (const author of paper.authorAddresses || []) {
+      if (!isAuthor(inv, author.name)) continue;
+      const address = author.addresses.find(investigatorAddress);
+      if (address) return { address, source: author.source, author: inv.name };
+    }
+  }
+  return null;
 }
 
 /* ── Small helpers ───────────────────────────────────────────── */
@@ -178,6 +270,16 @@ async function pubmedSearch() {
   return { ids: data?.esearchresult?.idlist || [], total: Number(data?.esearchresult?.count) || 0 };
 }
 
+// Papers by a listed researcher who has no Scopus ID on the roster yet ("pubmedAuthor": "Trujillo J").
+// Limited to papers with a Cork address, because a name on its own can be several people.
+async function pubmedAuthorSearch(author) {
+  const term = `"${String(author).replace(/"/g, '')}"[Author] AND (INFANT[ad] OR "University College Cork"[ad] OR UCC[ad] OR "Cork University Maternity Hospital"[ad]) AND ${FIRST_YEAR}:3000[dp]`;
+  const { data } = await axios.get(`${PUBMED_URL}/esearch.fcgi`, {
+    params: { db: 'pubmed', term, retmax: 9999, retmode: 'json' }, timeout: TIMEOUT,
+  });
+  return data?.esearchresult?.idlist || [];
+}
+
 /* ── Step 2: full PubMed records (addresses, dates, type) ────── */
 
 function pubmedDate(block) {
@@ -222,6 +324,7 @@ function parsePubmedArticle(xml) {
     return {
       short: `${decodeEntities(last)} ${initials || ''}`.trim(),
       full: first ? `${decodeEntities(first)} ${decodeEntities(last)}` : `${decodeEntities(last)} ${initials || ''}`.trim(),
+      addresses: [...a[0].matchAll(/<Affiliation>([\s\S]*?)<\/Affiliation>/g)].map(m => stripTags(m[1])),
     };
   }).filter(Boolean);
   return {
@@ -230,6 +333,8 @@ function parsePubmedArticle(xml) {
     journal: stripTags(xml.match(/<Journal>[\s\S]*?<Title>([\s\S]*?)<\/Title>/)?.[1]),
     authors: shortAuthorList(authors.map(a => a.short)),
     authorNames: authors.map(a => a.full),
+    // Which address belongs to which author (for the listed-researcher check).
+    authorAddresses: authors.filter(a => a.addresses?.length).map(a => ({ name: a.full, addresses: a.addresses })),
     doi: cleanDoi(xml.match(/<ArticleId IdType="doi">([^<]+)<\/ArticleId>/)?.[1] || xml.match(/<ELocationID EIdType="doi"[^>]*>([^<]+)<\/ELocationID>/)?.[1]),
     onlineDate: pubmedDate(xml.match(/<ArticleDate[^>]*>([\s\S]*?)<\/ArticleDate>/)?.[1]),
     issueDate: pubmedDate(xml.match(/<PubDate>([\s\S]*?)<\/PubDate>/)?.[1]),
@@ -270,6 +375,9 @@ async function crossrefRecord(doi) {
   return {
     addresses: (work.author || []).flatMap(a => (a.affiliation || []).map(x => x.name)).filter(Boolean),
     authorNames: (work.author || []).map(a => [a.given, a.family].filter(Boolean).join(' ') || a.name).filter(Boolean),
+    authorAddresses: (work.author || [])
+      .map(a => ({ name: [a.given, a.family].filter(Boolean).join(' '), addresses: (a.affiliation || []).map(x => x.name).filter(Boolean) }))
+      .filter(a => a.name && a.addresses.length),
     onlineDate: crossrefDate(work['published-online']),
     issueDate: crossrefDate(work['published-print']) || crossrefDate(work.issued),
   };
@@ -304,7 +412,10 @@ async function openalexRecords(dois) {
     const doi = cleanDoi(work.doi);
     const addresses = (work.authorships || []).flatMap(a => a.raw_affiliation_strings || []).filter(Boolean);
     const authorNames = (work.authorships || []).map(a => a.author?.display_name).filter(Boolean);
-    if (doi) records.set(doi, { addresses, authorNames });
+    const authorAddresses = (work.authorships || [])
+      .map(a => ({ name: a.author?.display_name || '', addresses: (a.raw_affiliation_strings || []).filter(Boolean) }))
+      .filter(a => a.name && a.addresses.length);
+    if (doi) records.set(doi, { addresses, authorNames, authorAddresses });
   };
   for (let i = 0; i < dois.length; i += 50) {
     const batch = dois.slice(i, i + 50);
@@ -334,6 +445,7 @@ function mergeInto(papers, index, record, source) {
     if (field === 'openAccess') paper.openAccess = paper.openAccess || value;
     else if (field === 'citations') { if (value !== null) paper.citations = Math.max(paper.citations ?? 0, value); }
     else if (field === 'scopusAffiliations') paper.scopusAffiliations = [...(paper.scopusAffiliations || []), ...value];
+    else if (field === 'investigators') paper.investigators = [...new Set([...(paper.investigators || []), ...value])];
     else if (value && !paper[field]) paper[field] = value;
   }
   paper.foundBy[source] = true;
@@ -355,7 +467,9 @@ function elsevierReason(error) {
 
 /* ── Building the list ───────────────────────────────────────── */
 
-async function build({ researcherIds = [] } = {}) {
+async function build(options = {}) {
+  const roster = buildRoster(options);
+  const withAddresses = (list, source) => (list || []).map(a => ({ ...a, source }));
   const apiKey = process.env.ELSEVIER_API_KEY;
   const sources = {};
   const papers = [];
@@ -382,19 +496,38 @@ async function build({ researcherIds = [] } = {}) {
     }),
     attempt('Scopus researcher search', async () => {
       needKey();
-      if (!researcherIds.length) throw new Error('no researcher IDs in impact-data.json');
-      const authors = researcherIds.map(id => `AU-ID(${id})`).join(' OR ');
-      const { entries, total } = await scopusSearch(`(${authors}) AND PUBYEAR > ${FIRST_YEAR - 1}`, apiKey);
-      return { found: entries.length, total, entries, researchers: researcherIds.length };
+      if (!roster.some(r => r.scopusIds.length)) throw new Error('no researcher IDs in impact-data.json');
+      // One search per researcher, so every paper records whose it is (Scopus search results name
+      // only the first author). A person with two Scopus profiles is searched under both.
+      const entries = [];
+      for (const inv of roster.filter(r => r.scopusIds.length)) {
+        const authors = inv.scopusIds.map(id => `AU-ID(${id})`).join(' OR ');
+        const result = await scopusSearch(`(${authors}) AND PUBYEAR > ${FIRST_YEAR - 1}`, apiKey);
+        result.entries.forEach(entry => entries.push({ entry, investigator: inv.id }));
+      }
+      const found = new Set(entries.map(x => x.entry.eid)).size;
+      return { found, total: found, entries, researchers: roster.length };
     }),
   ]);
+  // Listed researchers without a Scopus ID yet: found by name in PubMed instead.
+  const byName = roster.filter(r => r.pubmedAuthor);
+  const named = byName.length ? await attempt('PubMed researcher search', async () => {
+    const entries = [];
+    for (const inv of byName) {
+      (await pubmedAuthorSearch(inv.pubmedAuthor)).forEach(pmid => entries.push({ pmid, investigator: inv.id }));
+      await sleep(400);
+    }
+    return { found: entries.length, entries, researchers: byName.length };
+  }) : null;
   (scopus.entries || []).forEach(e => mergeInto(papers, index, fromScopus(e), 'scopus'));
-  (researchers.entries || []).forEach(e => mergeInto(papers, index, fromScopus(e), 'researcher'));
+  (researchers.entries || []).forEach(x => mergeInto(papers, index, { ...fromScopus(x.entry), investigators: [x.investigator] }, 'researcher'));
   (pubmed.ids || []).forEach(pmid => mergeInto(papers, index, { pmid }, 'pubmed'));
+  (named?.entries || []).forEach(x => mergeInto(papers, index, { pmid: x.pmid, investigators: [x.investigator] }, 'researcher'));
   const strip = ({ entries, ids, ...rest }) => rest;
   sources.scopus = strip(scopus);
   sources.pubmed = strip(pubmed);
   sources.researchers = strip(researchers);
+  if (named) sources.researchersPubmed = strip(named);
 
   // Step 2a: full PubMed records for every candidate that has a PubMed ID.
   const pmids = [...new Set(papers.map(p => p.pmid).filter(Boolean))];
@@ -405,6 +538,7 @@ async function build({ researcherIds = [] } = {}) {
     const r = p.pmid && records.get(p.pmid);
     if (!r) continue;
     p.addresses = r.addresses;
+    p.authorAddresses = withAddresses(r.authorAddresses, 'PubMed');
     p.onlineDate = r.onlineDate;
     p.issueDate = p.issueDate || r.issueDate;
     // PubMed's publication types are the most detailed, except that PubMed files conference
@@ -424,6 +558,7 @@ async function build({ researcherIds = [] } = {}) {
     const twin = keys.map(k => seen.get(k)).find(Boolean);
     if (twin) {
       Object.assign(twin.foundBy, p.foundBy);
+      if (p.investigators) twin.investigators = [...new Set([...(twin.investigators || []), ...p.investigators])];
       for (const [field, value] of Object.entries(p)) if (value && !twin[field]) twin[field] = value;
       keys.forEach(k => seen.set(k, twin));
       continue;
@@ -451,6 +586,7 @@ async function build({ researcherIds = [] } = {}) {
     p.onlineDate = p.onlineDate || r.onlineDate;
     p.issueDate = p.issueDate || r.issueDate;
     if (r.addresses.length && !p.addresses?.length) p.addresses = r.addresses;
+    p.authorAddresses = [...(p.authorAddresses || []), ...withAddresses(r.authorAddresses, 'Crossref')];
     if (r.authorNames?.length && !p.authorNames?.length) { p.authorNames = r.authorNames; p.authors = shortAuthorList(r.authorNames); }
     verify(p, r.addresses, 'Crossref');
   }
@@ -466,9 +602,19 @@ async function build({ researcherIds = [] } = {}) {
     const r = p.doi && oaRecords.get(p.doi);
     if (!r) continue;
     if (r.authorNames?.length && !p.authorNames?.length) { p.authorNames = r.authorNames; p.authors = shortAuthorList(r.authorNames); }
+    p.authorAddresses = [...(p.authorAddresses || []), ...withAddresses(r.authorAddresses, 'OpenAlex')];
     if (!r.addresses?.length) continue;
     verify(p, r.addresses, 'OpenAlex');
     if (!p.addresses?.length) p.addresses = r.addresses;
+  }
+
+  // Step 2e: listed researchers. Learn the names of those listed by Scopus ID only, then verify a
+  // researcher's paper when their own address on it names INFANT, UCC or CUMH.
+  learnNames(roster, unique);
+  for (const p of unique) {
+    if (p.evidence || !p.investigators?.length) continue;
+    const hit = investigatorEvidence(p, roster);
+    if (hit) { p.evidence = hit.address; p.evidenceSource = hit.source; p.evidenceAuthor = hit.author; }
   }
 
   // Status, first publication date and year for every paper.
@@ -477,21 +623,23 @@ async function build({ researcherIds = [] } = {}) {
     p.year = p.date ? Number(p.date.slice(0, 4)) : null;
     p.type = p.type || 'Article';
     if (p.evidence) p.status = COUNTED_TYPES.includes(p.type) ? 'verified' : 'other_output';
-    else if (p.addresses?.length) p.status = 'not_infant'; // full addresses checked: none names INFANT
-    else if (!p.foundBy.scopus && !p.foundBy.pubmed) p.status = 'not_infant'; // a researcher's other work
-    else p.status = 'needs_review'; // found by an INFANT search, but its addresses aren't available
+    else if (!p.addresses?.length && (p.foundBy.scopus || p.foundBy.pubmed)) p.status = 'needs_review'; // found by an INFANT search, but its addresses aren't available
+    else if (p.investigators?.length) p.status = 'investigator'; // a listed researcher's paper, not verified automatically
+    else p.status = 'not_infant'; // addresses checked and none names INFANT
     delete p.scopusAffiliations;
     delete p.scopusType;
     delete p.addresses;
+    delete p.authorAddresses;
   }
 
   const listed = unique.filter(p => p.year && p.year >= FIRST_YEAR && !['Correction', 'Retraction'].includes(p.type));
   const byYear = {};
   for (const p of listed) {
-    const y = (byYear[p.year] = byYear[p.year] || { verified: 0, otherOutputs: 0, needsReview: 0, notInfant: 0 });
+    const y = (byYear[p.year] = byYear[p.year] || { verified: 0, otherOutputs: 0, needsReview: 0, investigator: 0, notInfant: 0 });
     if (p.status === 'verified') y.verified += 1;
     else if (p.status === 'other_output') y.otherOutputs += 1;
     else if (p.status === 'needs_review') y.needsReview += 1;
+    else if (p.status === 'investigator') y.investigator += 1;
     else y.notInfant += 1;
   }
   const count = status => listed.filter(p => p.status === status).length;
@@ -503,6 +651,9 @@ async function build({ researcherIds = [] } = {}) {
     totalVerified: count('verified'),
     otherOutputs: count('other_output'),
     needsReview: count('needs_review'),
+    investigatorPapers: count('investigator'),
+    // The roster, with the names learnt for researchers listed by Scopus ID only.
+    investigators: roster.map(inv => ({ id: inv.id, name: inv.name || null, nameLearned: Boolean(inv.nameLearned), scopusIds: inv.scopusIds })),
     byYear,
     sources,
     papers: listed.sort((a, b) => b.date.localeCompare(a.date) || (a.title || '').localeCompare(b.title || '')),
@@ -534,7 +685,9 @@ function refresh(options, { force = false } = {}) {
       .then(data => {
         // Keep the previous list if every database failed this time, or if Scopus failed now but
         // worked before: a PubMed-only list would quietly drop the papers only Scopus finds.
-        const lostScopus = state.data?.sources?.scopus?.ok && !data.sources.scopus?.ok;
+        // The same goes for the researcher search: without it, the listed researchers' papers vanish.
+        const lostScopus = (state.data?.sources?.scopus?.ok && !data.sources.scopus?.ok)
+          || (state.data?.version === LIST_VERSION && state.data?.sources?.researchers?.ok && !data.sources.researchers?.ok);
         if (lostScopus || (!usable(data) && state.data)) {
           state.data = { ...state.data, lastAttempt: { at: data.updatedAt, sources: data.sources } };
         } else {
@@ -555,25 +708,69 @@ function refresh(options, { force = false } = {}) {
   return state.data ? Promise.resolve(state.data) : state.building;
 }
 
+/* ── Papers added or removed by hand ─────────────────────────── */
+
+// { "doi:10.1002/x": { action: "include" | "exclude", at: "2026-11-13T10:00:00.000Z" } }
+// Keyed by DOI or PubMed ID (not the list's own id), so a decision still applies after a rebuild.
+let overrides = (() => { try { return JSON.parse(fs.readFileSync(OVERRIDES_FILE, 'utf8')); } catch { return {}; } })();
+const overrideKey = p => (p.doi ? `doi:${p.doi}` : p.pmid ? `pmid:${p.pmid}` : p.id);
+
+function setOverride(key, action) {
+  if (!['include', 'exclude', null].includes(action)) throw new Error('action must be "include", "exclude" or null');
+  const next = { ...overrides };
+  if (action) next[key] = { action, at: new Date().toISOString() }; else delete next[key];
+  fs.writeFileSync(`${OVERRIDES_FILE}.tmp`, JSON.stringify(next, null, 1));
+  fs.renameSync(`${OVERRIDES_FILE}.tmp`, OVERRIDES_FILE);
+  overrides = next;
+  viewed = null;
+}
+
+// The list as the pages and reports see it: every paper says whether it is counted and why.
+//   collection: 'automatic' (verified), 'added' (by hand), 'removed' (verified, taken out by hand) or null.
+let viewed = null;
+function view(data) {
+  if (!data) return data;
+  if (viewed?.from === data) return viewed.result;
+  const byYear = Object.fromEntries(Object.entries(data.byYear || {}).map(([year, v]) => [year, { ...v, counted: 0, added: 0 }]));
+  const papers = data.papers.map(p => {
+    const key = overrideKey(p);
+    const action = overrides[key]?.action;
+    const automatic = p.status === 'verified';
+    const counted = action === 'include' ? true : action === 'exclude' ? false : automatic;
+    const collection = counted ? (automatic ? 'automatic' : 'added') : (automatic ? 'removed' : null);
+    if (counted && byYear[p.year]) { byYear[p.year].counted += 1; if (!automatic) byYear[p.year].added += 1; }
+    return { ...p, key, counted, collection };
+  });
+  const result = {
+    ...data, papers, byYear,
+    totalCounted: papers.filter(p => p.counted).length,
+    manuallyAdded: papers.filter(p => p.collection === 'added').length,
+    manuallyRemoved: papers.filter(p => p.collection === 'removed').length,
+  };
+  viewed = { from: data, result };
+  return result;
+}
+
 // The latest list, waiting for the first build if there isn't one yet.
 async function getPublications(options) {
   const pending = refresh(options);
-  return state.data || pending;
+  return view(state.data || await pending);
 }
 
 const isBuilding = () => Boolean(state.building);
-const latest = () => state.data;
+const latest = () => view(state.data);
 
 // Verified papers in the shape the executive reports use.
 async function getPublicationItems(options) {
   const data = await getPublications(options);
   if (!data) throw new Error('The publication list is not available.');
   return data.papers
-    .filter(p => p.status === 'verified' && p.date)
+    .filter(p => p.counted && p.date)
     .map(p => ({ id: p.id, date: p.date, title: p.title, journal: p.journal, open_access: Boolean(p.openAccess) }));
 }
 
 module.exports = {
-  getPublications, getPublicationItems, refresh, isBuilding, latest, build,
+  getPublications, getPublicationItems, refresh, isBuilding, latest, build, setOverride, view,
+  buildRoster, learnNames, isAuthor, investigatorEvidence, investigatorAddress,
   namesInfant, parsePubmedArticle, cleanDoi, titleKey, FIRST_YEAR, COUNTED_TYPES,
 };
