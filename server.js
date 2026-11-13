@@ -408,7 +408,12 @@ app.put('/api/publications/collection', (req, res) => {
     if (typeof key !== 'string' || !data.papers.some(p => p.key === key)) return res.status(404).json({ error: 'That paper is not in the publication list.' });
     publications.setOverride(key, action);
     const updated = publications.latest();
-    res.json({ paper: updated.papers.find(p => p.key === key), totalCounted: updated.totalCounted, manuallyAdded: updated.manuallyAdded, manuallyRemoved: updated.manuallyRemoved, byYear: updated.byYear });
+    res.json({
+      paper: updated.papers.find(p => p.key === key),
+      totalCounted: updated.totalCounted, manuallyAdded: updated.manuallyAdded, manuallyRemoved: updated.manuallyRemoved,
+      needsReview: updated.needsReview, otherOutputs: updated.otherOutputs,
+      byYear: updated.byYear,
+    });
   } catch (error) {
     console.error('Publication collection error:', error.message);
     res.status(500).json({ error: 'The change could not be saved.' });

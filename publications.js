@@ -727,25 +727,43 @@ function setOverride(key, action) {
 
 // The list as the pages and reports see it: every paper says whether it is counted and why.
 //   collection: 'automatic' (verified), 'added' (by hand), 'removed' (verified, taken out by hand) or null.
+// A paper added by hand counts exactly like a verified one: its status becomes 'verified', so it leaves
+// "needs review", "other outputs" and the listed researchers' pile, and every count and chart moves with it.
+// The status it had before is kept as autoStatus.
 let viewed = null;
 function view(data) {
   if (!data) return data;
   if (viewed?.from === data) return viewed.result;
-  const byYear = Object.fromEntries(Object.entries(data.byYear || {}).map(([year, v]) => [year, { ...v, counted: 0, added: 0 }]));
   const papers = data.papers.map(p => {
     const key = overrideKey(p);
     const action = overrides[key]?.action;
     const automatic = p.status === 'verified';
     const counted = action === 'include' ? true : action === 'exclude' ? false : automatic;
     const collection = counted ? (automatic ? 'automatic' : 'added') : (automatic ? 'removed' : null);
-    if (counted && byYear[p.year]) { byYear[p.year].counted += 1; if (!automatic) byYear[p.year].added += 1; }
-    return { ...p, key, counted, collection };
+    const status = collection === 'added' ? 'verified' : p.status;
+    return { ...p, key, counted, collection, status, autoStatus: p.status };
   });
+  const byYear = {};
+  for (const p of papers) {
+    if (!p.year) continue;
+    const y = (byYear[p.year] = byYear[p.year]
+      || { verified: 0, counted: 0, added: 0, removed: 0, otherOutputs: 0, needsReview: 0, investigator: 0, notInfant: 0 });
+    if (p.counted) { y.counted += 1; y.verified += 1; if (p.collection === 'added') y.added += 1; }
+    else if (p.collection === 'removed') y.removed += 1;
+    else if (p.status === 'other_output') y.otherOutputs += 1;
+    else if (p.status === 'needs_review') y.needsReview += 1;
+    else if (p.status === 'investigator') y.investigator += 1;
+    else y.notInfant += 1;
+  }
+  const notCounted = status => papers.filter(p => !p.counted && p.status === status).length;
   const result = {
     ...data, papers, byYear,
     totalCounted: papers.filter(p => p.counted).length,
     manuallyAdded: papers.filter(p => p.collection === 'added').length,
     manuallyRemoved: papers.filter(p => p.collection === 'removed').length,
+    otherOutputs: notCounted('other_output'),
+    needsReview: notCounted('needs_review'),
+    investigatorPapers: notCounted('investigator'),
   };
   viewed = { from: data, result };
   return result;
