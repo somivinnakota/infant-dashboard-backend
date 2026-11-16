@@ -45,7 +45,7 @@ const MIN_MANUAL_REFRESH_MS = 5 * 60 * 1000;
 // Raise this when the saved list needs new information (2 = every author's name, 3 = listed
 // researchers and their own addresses). A list saved
 // by an older version is rebuilt straight away instead of waiting a day.
-const LIST_VERSION = 3;
+const LIST_VERSION = 4;
 const TIMEOUT = 45000;
 const CACHE_FILE = dataPath('publications-cache.json', path.join(__dirname, 'publications-cache.json'));
 const OVERRIDES_FILE = dataPath('publication-overrides.json', path.join(__dirname, 'publication-overrides.json'));
@@ -614,7 +614,7 @@ async function build(options = {}) {
   for (const p of unique) {
     if (p.evidence || !p.investigators?.length) continue;
     const hit = investigatorEvidence(p, roster);
-    if (hit) { p.evidence = hit.address; p.evidenceSource = hit.source; p.evidenceAuthor = hit.author; }
+    if (hit) p.researcherEvidence = { address: hit.address, source: hit.source, author: hit.author };
   }
 
   // Status, first publication date and year for every paper.
