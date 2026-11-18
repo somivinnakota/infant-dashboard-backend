@@ -11,4 +11,3 @@ meta-history.json
 linkedin-history.json
 # Uploaded sheets (KPI tracker, press, events, conferences) when DATA_DIR is not set
 sheets/
-publication-overrides.json
