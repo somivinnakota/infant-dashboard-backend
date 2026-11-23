@@ -16,6 +16,7 @@
 //   GET    /api/sheets/:page            the saved sheet and its history
 //   POST   /api/sheets/:page/preview    what an upload would change   { upload, mode }
 //   POST   /api/sheets/:page            merge (or replace) and save   { upload, mode }
+//   POST   /api/sheets/:page/remove-tab remove one tab, and leave it out of later uploads   { name }
 //   POST   /api/sheets/:page/undo       go back to the version before the last change
 //   DELETE /api/sheets/:page            clear the sheet (can be undone)
 
@@ -44,10 +45,33 @@ const plain = v => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, 
 // (the new spelling is still saved).
 const same = (a, b) => plain(a) === plain(b);
 
-const KPI_ID = /^\d+(\.\d+)*$/;
+// A KPI number, also when written with its name ("1.1.1 Number of …", "KPI 1.1.1: …"). Group 1 is the number.
+const KPI_ID = /^(?:(?:kpi|indicator|ind|no)\.?\s*)?(\d{1,2}(?:\.\d+)*[a-z]?)\.?(?=$|[\s:)\u2013\u2014-])/i;
+const kpiNumber = v => String(v ?? '').trim().match(KPI_ID)?.[1] || '';
 
 function filledValues(sheet, header) {
   return sheet.rows.map(r => r[header]).filter(v => !isBlank(v));
+}
+
+// A short text label rather than a figure or a comment, e.g. "Female".
+const isLabel = v => !isBlank(v) && typeof v !== 'number' && Number.isNaN(Number(String(v).replace(/[,%€$£\s]/g, ''))) && String(v).trim().length <= 40;
+const BREAKDOWN_HINT = /disaggregat|breakdown|category|sex|gender|group|county|region|area|site|location|cohort|age|ethnic|nationality|split/i;
+const NOT_BREAKDOWN = /comment|note|source|verification|evidence|definition|frequency|responsib|owner|status|rag\b|method|link|unit/i;
+
+// In a disaggregated KPI sheet, the column that tells apart the rows of one KPI (Sex, County …):
+// short labels that differ between rows with the same KPI number (counting a blank number as the
+// one above it). The KPI name stays the same within a KPI, so it is never picked.
+function breakdownColumn(sheet, idColumn) {
+  const groups = new Map();
+  let current = null;
+  for (const row of sheet.rows) {
+    current = kpiNumber(row[idColumn]) || current;
+    if (current) groups.set(current, [...(groups.get(current) || []), row]);
+  }
+  const varies = h => [...groups.values()].filter(rows => new Set(rows.map(r => plain(r[h])).filter(Boolean)).size >= 2).length;
+  const candidates = sheet.headers
+    .filter(h => h !== idColumn && !NOT_BREAKDOWN.test(h) && filledValues(sheet, h).every(isLabel) && varies(h) > 0);
+  return candidates.find(h => BREAKDOWN_HINT.test(h)) || candidates.sort((a, b) => varies(b) - varies(a))[0];
 }
 
 // Which columns identify a row in this sheet. Returns { columns, label } or null if none fit.
@@ -56,12 +80,16 @@ function keyFor(page, sheet) {
   const find = (...patterns) => patterns.map(p => sheet.headers.find(h => p.test(h))).find(Boolean);
 
   if (page === 'kpis') {
-    // The KPI number column: 1, 1.1, 1.2 … (the same rule the KPI tracker page uses).
+    // The KPI number column: 1, 1.1, 1.1.1 … (the same rule the KPI tracker page uses).
     const id = sheet.headers.find(h => {
       const values = filledValues(sheet, h).map(v => String(v).trim());
-      return values.length >= 3 && values.filter(v => KPI_ID.test(v)).length / values.length >= 0.8;
+      return values.length >= 2 && values.filter(v => KPI_ID.test(v)).length / values.length >= 0.6
+        && values.filter(v => kpiNumber(v).includes('.')).length >= 2;
     });
-    if (id) return { columns: [id], label: `the KPI number (${id})` };
+    if (id) {
+      const breakdown = breakdownColumn(sheet, id);
+      return { columns: [id, breakdown].filter(Boolean), label: `the KPI number (${id})${breakdown ? ` + ${breakdown}` : ''}`, kpi: { id, breakdown } };
+    }
   }
 
   if (page === 'press') {
@@ -87,8 +115,23 @@ function keyRows(sheet, key) {
   const seen = {};
   let dataStarted = false;
   const wholeRow = row => sheet.headers.map(h => plain(row[h]));
+  // KPI tracker: a row is matched by its KPI number, so renaming a KPI or editing a comment corrects
+  // it rather than adding it again. In a disaggregated sheet, a number used on several rows
+  // (1.1.1 Male, 1.1.1 Female), or left blank under the row above (merged cells), is matched on
+  // the number plus its breakdown label, so the rows can't be mixed up if their order changes.
+  const kpiCounts = {};
+  if (key?.kpi) sheet.rows.forEach(r => { const n = kpiNumber(r[key.kpi.id]); if (n) kpiCounts[n] = (kpiCounts[n] || 0) + 1; });
+  let lastNumber = null;
+  const kpiParts = row => {
+    const n = kpiNumber(row[key.kpi.id]);
+    const part = key.kpi.breakdown ? plain(row[key.kpi.breakdown]) : '';
+    if (n) { lastNumber = n; return kpiCounts[n] > 1 ? [n, part] : [n]; }
+    if (!dataStarted) return [''];
+    const label = part || plain(sheet.headers.map(h => row[h]).find(isLabel) || '');
+    return lastNumber && label ? [lastNumber, 'part', label] : [''];
+  };
   return sheet.rows.map(row => {
-    let parts = key ? key.columns.map(c => plain(row[c])) : wholeRow(row);
+    let parts = key?.kpi ? kpiParts(row) : key ? key.columns.map(c => plain(row[c])) : wholeRow(row);
     if (parts.every(p => p === '')) {
       if (!dataStarted) return null;
       parts = ['row', ...wholeRow(row)];
@@ -176,17 +219,34 @@ function mergeSheet(page, saved, incoming) {
 
 /* ── Merging a whole workbook ──────────────────────────────────── */
 
-// Sheets are matched by name. Sheets only in the saved workbook are kept.
+// Tabs left out of this page (e.g. "Instructions", "Charts", or the conference list in the events
+// file). Remembered with the workbook, so the next upload of the same file leaves them out too.
+// A tab that is uploaded again is no longer left out.
+function excludedTabs(saved, upload) {
+  const uploaded = new Set(upload.sheets.map(s => plain(s.name)));
+  const names = [...(saved?.excluded || []).filter(n => !uploaded.has(plain(n))), ...(upload.excluded || [])];
+  return [...new Map(names.map(n => [plain(n), n])).values()];
+}
+
+// Sheets are matched by name. Sheets only in the saved workbook are kept, unless the upload
+// leaves them out on purpose (upload.excluded), which removes them.
 function mergeWorkbook(page, saved, upload, mode = 'merge') {
-  const summary = { sheets: [], added: 0, corrected: 0, kept: 0, unchanged: 0, replaced: mode === 'replace' };
+  const summary = { sheets: [], added: 0, corrected: 0, kept: 0, unchanged: 0, replaced: mode === 'replace', removedSheets: [] };
+  const excluded = excludedTabs(mode === 'replace' ? null : saved, upload);
   if (!saved || mode === 'replace') {
     const rows = upload.sheets.reduce((n, s) => n + s.rows.length, 0);
     summary.added = rows;
     summary.sheets = upload.sheets.map(s => ({ name: s.name, rows: s.rows.length, matchedBy: keyFor(page, s)?.label || 'every column' }));
-    return { workbook: { fileName: upload.fileName, sheets: upload.sheets }, summary, previousRows: saved ? saved.sheets.reduce((n, s) => n + s.rows.length, 0) : 0 };
+    return { workbook: { fileName: upload.fileName, sheets: upload.sheets, excluded }, summary, previousRows: saved ? saved.sheets.reduce((n, s) => n + s.rows.length, 0) : 0 };
   }
 
   const byName = new Map(saved.sheets.map(s => [plain(s.name), s]));
+  const leftOutBefore = new Set((saved.excluded || []).map(plain));
+  summary.newlyExcluded = []; // tabs this upload leaves out for the first time, so the choice gets saved
+  for (const name of upload.excluded || []) {
+    if (byName.has(plain(name))) { summary.removedSheets.push(byName.get(plain(name)).name); byName.delete(plain(name)); }
+    else if (!leftOutBefore.has(plain(name))) summary.newlyExcluded.push(name);
+  }
   const sheets = upload.sheets.map(incoming => {
     const old = byName.get(plain(incoming.name));
     byName.delete(plain(incoming.name));
@@ -204,7 +264,7 @@ function mergeWorkbook(page, saved, upload, mode = 'merge') {
     return sheet;
   });
   sheets.push(...byName.values()); // sheets the new file doesn't have
-  return { workbook: { fileName: upload.fileName, sheets }, summary };
+  return { workbook: { fileName: upload.fileName, sheets, excluded }, summary };
 }
 
 /* ── Saving ────────────────────────────────────────────────────── */
@@ -238,7 +298,7 @@ function describe(data) {
   };
 }
 
-// Checks an upload from the website: { fileName, sheets: [{ name, headers, rows, layout }] }.
+// Checks an upload from the website: { fileName, sheets: [{ name, headers, rows, layout }], excluded: [tab names] }.
 function validUpload(upload) {
   if (!upload || typeof upload.fileName !== 'string' || !Array.isArray(upload.sheets) || !upload.sheets.length) return null;
   let total = 0;
@@ -250,6 +310,7 @@ function validUpload(upload) {
   return {
     fileName: upload.fileName.slice(0, 200),
     sheets: upload.sheets.map(s => ({ name: s.name, headers: s.headers.map(String), rows: s.rows, ...(Array.isArray(s.layout) && { layout: s.layout }) })),
+    excluded: Array.isArray(upload.excluded) ? upload.excluded.filter(n => typeof n === 'string').slice(0, 100).map(n => n.slice(0, 200)) : [],
   };
 }
 
@@ -257,7 +318,9 @@ function changeText(summary, mode) {
   if (mode === 'replace') return `Replaced with ${summary.added} rows`;
   if (mode === 'clear') return 'Cleared';
   if (mode === 'move') return 'Moved from a browser';
-  return `${summary.added} added, ${summary.corrected} corrected`;
+  const removed = summary.removedSheets?.length ? `, removed ${summary.removedSheets.join(', ')}` : '';
+  const leftOut = summary.newlyExcluded?.length ? `, left out ${summary.newlyExcluded.join(', ')}` : '';
+  return `${summary.added} added, ${summary.corrected} corrected${removed}${leftOut}`;
 }
 
 /* ── Routes ────────────────────────────────────────────────────── */
@@ -305,6 +368,28 @@ module.exports = function sheetRoutes(app) {
       writePage(req.params.page, saved);
       res.json(describe(saved));
     } catch (error) { failed(res, error, 'saved'); }
+  });
+
+  // Removes one tab from the saved workbook and remembers to leave it out of later uploads.
+  // Saved as a new version, so Undo brings it back.
+  app.post('/api/sheets/:page/remove-tab', (req, res) => {
+    if (!pageFrom(req, res)) return;
+    try {
+      const data = readPage(req.params.page);
+      const workbook = data.current?.workbook;
+      const name = typeof req.body?.name === 'string' ? req.body.name : '';
+      const tab = workbook?.sheets.find(s => plain(s.name) === plain(name));
+      if (!tab) return res.status(404).json({ error: 'That tab is not in the saved sheet.' });
+      if (workbook.sheets.length === 1) return res.status(400).json({ error: 'This is the only tab. Use Clear to remove everything.' });
+      const next = {
+        workbook: { ...workbook, sheets: workbook.sheets.filter(s => s !== tab), excluded: excludedTabs(workbook, { sheets: [], excluded: [tab.name] }) },
+        savedAt: new Date().toISOString(),
+        change: `Removed the ${tab.name} tab`,
+      };
+      const saved = saveVersion(data, next);
+      writePage(req.params.page, saved);
+      res.json(describe(saved));
+    } catch (error) { failed(res, error, 'changed'); }
   });
 
   app.post('/api/sheets/:page/undo', (req, res) => {
