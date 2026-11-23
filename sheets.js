@@ -101,7 +101,8 @@ function keyFor(page, sheet) {
   // Any sheet: a name or title column, plus a date column when there is one
   // (the same event can run on several dates).
   const name = find(/event|conference/i, /title|headline/i, /name|presenter|speaker|outlet/i);
-  const date = find(/date/i, /\bwhen\b|\bday\b/i);
+  // A date column: "Date", "Dates", "Event date" … but not "Update for 2026", which only contains the letters.
+  const date = find(/\bdates?\b/i, /(?<!up)date/i, /\bwhen\b|\bday\b/i);
   const columns = [name, date].filter(Boolean);
   if (columns.length) return { columns, label: columns.join(' + ') };
   return null;
